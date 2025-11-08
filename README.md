@@ -69,6 +69,7 @@ model.load_state_dict(checkpoint['model_state_dict'])
 
 # Generate report
 tokenizer = AutoTokenizer.from_pretrained('gpt2')
+tokenizer.pad_token = tokenizer.eos_token
 eval_set = create_fixed_eval_set(tokenizer)
 create_evaluation_report(model, eval_set, output_dir='./eval_report')
 ```
