@@ -1,0 +1,57 @@
+{
+  "description": "Quick test configuration for Phase 1 - small model, few steps",
+  "device": "cpu",
+  "output_dir": "./outputs/phase1_quick_test",
+
+  "model": {
+    "vocab_size": 50257,
+    "max_seq_len": 64,
+    "hidden_size": 384,
+    "num_layers": 6,
+    "num_heads": 8,
+    "ffn_size": 1536,
+    "dropout": 0.1,
+    "grid_size": 32,
+    "num_channels": 6,
+    "use_rope": true,
+    "use_smooth_head": true,
+    "tokenizer_name": "gpt2"
+  },
+
+  "loss": {
+    "lambda_spec": 0.5,
+    "lambda_tv": 0.1,
+    "lambda_wav": 0.1,
+    "lambda_kurt": 0.05,
+    "lambda_cov": 0.05,
+    "lambda_var": 0.05
+  },
+
+  "training": {
+    "batch_size": 16,
+    "lr": 2e-4,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "weight_decay": 0.01,
+    "warmup_steps": 50,
+    "num_epochs": 2,
+    "max_steps": 500,
+    "ema_decay": 0.999,
+    "grad_clip": 1.0,
+    "blur_sigma": 0.8,
+    "blur_warmup_steps": 100
+  },
+
+  "data": {
+    "train_file": "../train_sentences.txt",
+    "val_file": "../val_sentences.txt",
+    "num_workers": 0,
+    "file_format": "txt"
+  },
+
+  "eval": {
+    "eval_interval": 50,
+    "save_interval": 200,
+    "num_fixed_sentences": 16
+  }
+}

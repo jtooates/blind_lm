@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyTorch / Model outputs
+outputs/
+checkpoints/
+*.pt
+*.pth
+checkpoint_*
+
+# Visualizations (can regenerate)
+*.png
+*.jpg
+*.jpeg
+*.gif
+eval_report/
+
+# Logs
+*.log
+logs/
+wandb/
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (comment out if you want to include them)
+# train_sentences.txt
+# val_sentences.txt
+# test_sentences.txt
+# *.jsonl
+
+# Temporary files
+tmp/
+temp/
+*.tmp
