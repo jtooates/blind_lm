@@ -284,6 +284,30 @@ class Trainer:
             'lr': self.optimizer.param_groups[0]['lr']
         }
 
+    def _print_reconstruction_examples(self, original_texts, predicted_texts, num_examples=5):
+        """Print side-by-side comparison of original and reconstructed text"""
+        print("\n" + "="*70)
+        print(f"Reconstruction Examples (Step {self.step})")
+        print("="*70)
+
+        num_to_show = min(num_examples, len(original_texts))
+        for i in range(num_to_show):
+            orig = original_texts[i]
+            pred = predicted_texts[i]
+
+            # Check if exact match
+            match_symbol = "✓" if orig == pred else "✗"
+
+            print(f"\n[{i+1}] {match_symbol}")
+            print(f"  Original:    {orig}")
+            print(f"  Predicted:   {pred}")
+
+        # Compute accuracy
+        exact_matches = sum(1 for o, p in zip(original_texts, predicted_texts) if o == p)
+        accuracy = exact_matches / len(original_texts) * 100
+        print(f"\n  Exact match accuracy: {exact_matches}/{len(original_texts)} ({accuracy:.1f}%)")
+        print("="*70 + "\n")
+
     @torch.no_grad()
     def evaluate(self):
         """Evaluate on fixed set"""
@@ -308,6 +332,17 @@ class Trainer:
             return_components=True
         )
 
+        # Decode predictions (argmax)
+        predicted_ids = logits.argmax(dim=-1)  # [B, L]
+
+        # Decode to text
+        original_texts = eval_batch['text']
+        predicted_texts = []
+        for i in range(predicted_ids.shape[0]):
+            # Decode tokens to text
+            pred_text = self.tokenizer.decode(predicted_ids[i], skip_special_tokens=True)
+            predicted_texts.append(pred_text)
+
         # Restore original weights
         self.ema.restore()
 
@@ -315,7 +350,9 @@ class Trainer:
             'eval_loss': loss_dict['loss'].item(),
             'eval_metrics': loss_dict['metrics'],
             'eval_components': loss_dict['components'],
-            'eval_latents': latents.cpu()
+            'eval_latents': latents.cpu(),
+            'original_texts': original_texts,
+            'predicted_texts': predicted_texts
         }
 
     def train_epoch(self):
@@ -343,6 +380,13 @@ class Trainer:
                     'epoch': self.epoch,
                     **eval_metrics
                 })
+
+                # Print reconstruction examples
+                self._print_reconstruction_examples(
+                    eval_metrics['original_texts'],
+                    eval_metrics['predicted_texts'],
+                    num_examples=5
+                )
 
                 # Save checkpoint
                 if self.step % self.config['eval']['save_interval'] == 0:
