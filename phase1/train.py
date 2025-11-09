@@ -17,6 +17,7 @@ from tqdm import tqdm
 import time
 
 from model import TextEncoder, create_model
+from decoder import TextDecoder, create_decoder
 from losses import ImagePriorLoss
 from dataloader import create_dataloaders, create_fixed_eval_set
 
@@ -24,35 +25,54 @@ from dataloader import create_dataloaders, create_fixed_eval_set
 class EMA:
     """Exponential Moving Average for model parameters"""
 
-    def __init__(self, model, decay=0.999):
-        self.model = model
+    def __init__(self, models, decay=0.999):
+        """
+        Args:
+            models: list of models or dict of {'name': model}
+            decay: EMA decay rate
+        """
+        if isinstance(models, dict):
+            self.models = models
+        elif isinstance(models, (list, tuple)):
+            self.models = {f'model_{i}': m for i, m in enumerate(models)}
+        else:
+            self.models = {'model': models}
+
         self.decay = decay
         self.shadow = {}
         self.backup = {}
 
         # Initialize shadow parameters
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = param.data.clone()
+        for model_name, model in self.models.items():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    full_name = f'{model_name}.{name}'
+                    self.shadow[full_name] = param.data.clone()
 
     def update(self):
         """Update shadow parameters"""
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                self.shadow[name] = self.decay * self.shadow[name] + (1 - self.decay) * param.data
+        for model_name, model in self.models.items():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    full_name = f'{model_name}.{name}'
+                    self.shadow[full_name] = self.decay * self.shadow[full_name] + (1 - self.decay) * param.data
 
     def apply_shadow(self):
         """Apply shadow parameters to model"""
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                self.backup[name] = param.data
-                param.data = self.shadow[name]
+        for model_name, model in self.models.items():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    full_name = f'{model_name}.{name}'
+                    self.backup[full_name] = param.data
+                    param.data = self.shadow[full_name]
 
     def restore(self):
         """Restore original parameters"""
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                param.data = self.backup[name]
+        for model_name, model in self.models.items():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    full_name = f'{model_name}.{name}'
+                    param.data = self.backup[full_name]
         self.backup = {}
 
 
@@ -121,10 +141,19 @@ class Trainer:
         with open(self.output_dir / 'config.json', 'w') as f:
             json.dump(config, f, indent=2)
 
-        # Create model
-        print("Creating model...")
-        self.model = create_model(config['model']).to(self.device)
-        print(f"Model has {sum(p.numel() for p in self.model.parameters())/1e6:.2f}M parameters")
+        # Create encoder
+        print("Creating encoder...")
+        self.encoder = create_model(config['model']).to(self.device)
+        encoder_params = sum(p.numel() for p in self.encoder.parameters())/1e6
+        print(f"Encoder has {encoder_params:.2f}M parameters")
+
+        # Create decoder
+        print("Creating decoder...")
+        decoder_config = config.get('decoder', config['model'])  # Use encoder config as default
+        self.decoder = create_decoder(decoder_config).to(self.device)
+        decoder_params = sum(p.numel() for p in self.decoder.parameters())/1e6
+        print(f"Decoder has {decoder_params:.2f}M parameters")
+        print(f"Total parameters: {encoder_params + decoder_params:.2f}M")
 
         # Create loss function
         self.criterion = ImagePriorLoss(
@@ -133,12 +162,14 @@ class Trainer:
             lambda_wav=config['loss']['lambda_wav'],
             lambda_kurt=config['loss']['lambda_kurt'],
             lambda_cov=config['loss']['lambda_cov'],
-            lambda_var=config['loss']['lambda_var']
+            lambda_var=config['loss']['lambda_var'],
+            lambda_recon=config['loss'].get('lambda_recon', 0.0)
         ).to(self.device)
 
-        # Create optimizer
+        # Create optimizer (both encoder and decoder)
+        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         self.optimizer = AdamW(
-            self.model.parameters(),
+            all_params,
             lr=config['training']['lr'],
             betas=(config['training']['beta1'], config['training']['beta2']),
             weight_decay=config['training']['weight_decay']
@@ -163,8 +194,8 @@ class Trainer:
             milestones=[config['training']['warmup_steps']]
         )
 
-        # EMA
-        self.ema = EMA(self.model, decay=config['training']['ema_decay'])
+        # EMA (both encoder and decoder)
+        self.ema = EMA({'encoder': self.encoder, 'decoder': self.decoder}, decay=config['training']['ema_decay'])
 
         # Gaussian blur for warmup
         self.blur = GaussianBlur(sigma=config['training'].get('blur_sigma', 0.8)).to(self.device)
@@ -200,30 +231,42 @@ class Trainer:
 
     def train_step(self, batch):
         """Single training step"""
-        self.model.train()
+        self.encoder.train()
+        self.decoder.train()
 
         # Move to device
         input_ids = batch['input_ids'].to(self.device)
         attention_mask = batch['attention_mask'].to(self.device)
 
-        # Forward pass
-        latents = self.model(input_ids, attention_mask)  # [B, H, W, C]
+        # Encoder forward pass
+        latents = self.encoder(input_ids, attention_mask)  # [B, H, W, C]
 
         # Apply blur during warmup
         if self.step < self.blur_warmup_steps:
             latents = self.blur(latents)
 
-        # Compute loss
-        loss_dict = self.criterion(latents, return_components=True)
+        # Decoder forward pass (teacher forcing)
+        # For teacher forcing, input is shifted by 1: [BOS, tok1, tok2, ...] predicts [tok1, tok2, ..., EOS]
+        # For simplicity, we'll use the same input_ids (model learns to copy)
+        logits = self.decoder(latents, input_ids, attention_mask)  # [B, L, V]
+
+        # Compute loss (image priors + reconstruction)
+        loss_dict = self.criterion(
+            latents,
+            logits=logits,
+            target_ids=input_ids,
+            return_components=True
+        )
         loss = loss_dict['loss']
 
         # Backward pass
         self.optimizer.zero_grad()
         loss.backward()
 
-        # Gradient clipping
+        # Gradient clipping (both encoder and decoder)
+        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(),
+            all_params,
             self.config['training'].get('grad_clip', 1.0)
         )
 
@@ -244,7 +287,8 @@ class Trainer:
     @torch.no_grad()
     def evaluate(self):
         """Evaluate on fixed set"""
-        self.model.eval()
+        self.encoder.eval()
+        self.decoder.eval()
 
         # Apply EMA weights
         self.ema.apply_shadow()
@@ -253,10 +297,16 @@ class Trainer:
         eval_batch = self.eval_set.get_batch(device=self.device)
 
         # Forward pass
-        latents = self.model(eval_batch['input_ids'], eval_batch['attention_mask'])
+        latents = self.encoder(eval_batch['input_ids'], eval_batch['attention_mask'])
+        logits = self.decoder(latents, eval_batch['input_ids'], eval_batch['attention_mask'])
 
         # Compute metrics
-        loss_dict = self.criterion(latents, return_components=True)
+        loss_dict = self.criterion(
+            latents,
+            logits=logits,
+            target_ids=eval_batch['input_ids'],
+            return_components=True
+        )
 
         # Restore original weights
         self.ema.restore()
@@ -316,7 +366,8 @@ class Trainer:
         checkpoint = {
             'step': self.step,
             'epoch': self.epoch,
-            'model_state_dict': self.model.state_dict(),
+            'encoder_state_dict': self.encoder.state_dict(),
+            'decoder_state_dict': self.decoder.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'ema_shadow': self.ema.shadow,

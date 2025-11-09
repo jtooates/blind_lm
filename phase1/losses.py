@@ -374,9 +374,38 @@ class VarianceRegularizationLoss(nn.Module):
         return loss
 
 
+class ReconstructionLoss(nn.Module):
+    """
+    Cross-entropy reconstruction loss for text decoder.
+    """
+
+    def __init__(self, ignore_index: int = -100):
+        super().__init__()
+        self.ignore_index = ignore_index
+
+    def forward(self, logits: torch.Tensor, target_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: [B, L, V] predicted logits
+            target_ids: [B, L] target token IDs
+        Returns:
+            loss: cross-entropy loss
+        """
+        # Reshape for cross-entropy: [B*L, V] and [B*L]
+        B, L, V = logits.shape
+        logits_flat = logits.reshape(B * L, V)
+        target_flat = target_ids.reshape(B * L)
+
+        # Cross-entropy loss
+        loss = F.cross_entropy(logits_flat, target_flat, ignore_index=self.ignore_index)
+
+        return loss
+
+
 class ImagePriorLoss(nn.Module):
     """
     Combined image prior loss for Phase 1.
+    Now includes optional reconstruction loss.
     """
 
     def __init__(
@@ -387,6 +416,7 @@ class ImagePriorLoss(nn.Module):
         lambda_kurt: float = 0.05,
         lambda_cov: float = 0.05,
         lambda_var: float = 0.05,
+        lambda_recon: float = 0.0,  # NEW: reconstruction loss weight
         target_slope: float = 2.0,
         target_var: float = 1.0
     ):
@@ -399,6 +429,7 @@ class ImagePriorLoss(nn.Module):
         self.lambda_kurt = lambda_kurt
         self.lambda_cov = lambda_cov
         self.lambda_var = lambda_var
+        self.lambda_recon = lambda_recon
 
         # Individual losses
         self.spectrum_loss = SpectrumLoss(target_slope)
@@ -407,16 +438,25 @@ class ImagePriorLoss(nn.Module):
         self.kurtosis_loss = GradientKurtosisLoss()
         self.decorr_loss = ChannelDecorrelationLoss()
         self.var_loss = VarianceRegularizationLoss(target_var)
+        self.recon_loss = ReconstructionLoss()  # NEW
 
-    def forward(self, x: torch.Tensor, return_components: bool = False) -> dict:
+    def forward(
+        self,
+        x: torch.Tensor,
+        logits: Optional[torch.Tensor] = None,
+        target_ids: Optional[torch.Tensor] = None,
+        return_components: bool = False
+    ) -> dict:
         """
         Args:
             x: [B, H, W, C] visual latent
+            logits: [B, L, V] predicted logits (optional, for reconstruction)
+            target_ids: [B, L] target token IDs (optional, for reconstruction)
             return_components: whether to return individual loss components
         Returns:
             dict with 'loss' and optionally component losses and metrics
         """
-        # Compute individual losses
+        # Compute image prior losses
         spec_loss, spec_metrics = self.spectrum_loss(x)
         tv_loss = self.tv_loss(x)
         wav_loss = self.wavelet_loss(x)
@@ -434,6 +474,12 @@ class ImagePriorLoss(nn.Module):
             self.lambda_var * var_loss
         )
 
+        # Add reconstruction loss if provided
+        recon_loss_value = torch.tensor(0.0, device=x.device)
+        if logits is not None and target_ids is not None and self.lambda_recon > 0:
+            recon_loss_value = self.recon_loss(logits, target_ids)
+            total_loss = total_loss + self.lambda_recon * recon_loss_value
+
         result = {
             'loss': total_loss,
             'metrics': {
@@ -450,7 +496,8 @@ class ImagePriorLoss(nn.Module):
                 'wavelet': wav_loss.item(),
                 'kurtosis': kurt_loss.item(),
                 'decorrelation': cov_loss.item(),
-                'variance': var_loss.item()
+                'variance': var_loss.item(),
+                'reconstruction': recon_loss_value.item() if self.lambda_recon > 0 else 0.0
             }
 
         return result

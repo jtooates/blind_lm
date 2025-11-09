@@ -24,7 +24,19 @@
     "lambda_wav": 0.1,
     "lambda_kurt": 0.05,
     "lambda_cov": 0.05,
-    "lambda_var": 0.05
+    "lambda_var": 0.05,
+    "lambda_recon": 1.0
+  },
+
+  "decoder": {
+    "vocab_size": 50257,
+    "max_seq_len": 64,
+    "hidden_size": 384,
+    "num_layers": 4,
+    "num_heads": 8,
+    "ffn_size": 1536,
+    "dropout": 0.1,
+    "use_rope": true
   },
 
   "training": {
