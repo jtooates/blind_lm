@@ -1,0 +1,71 @@
+{
+  "description": "Single channel grayscale with object-forming losses",
+  "device": "cuda",
+  "output_dir": "./outputs/phase1_single_channel",
+  "use_object_losses": true,
+
+  "model": {
+    "vocab_size": 50257,
+    "max_seq_len": 64,
+    "hidden_size": 384,
+    "num_layers": 6,
+    "num_heads": 8,
+    "ffn_size": 1536,
+    "dropout": 0.1,
+    "grid_size": 32,
+    "num_channels": 1,
+    "use_rope": true,
+    "use_smooth_head": false,
+    "tokenizer_name": "gpt2"
+  },
+
+  "loss": {
+    "lambda_sparsity": 0.5,
+    "lambda_object_size": 1.0,
+    "lambda_binary": 0.3,
+    "lambda_contrastive": 2.0,
+    "lambda_tv": 0.1,
+    "lambda_recon": 5.0,
+    "target_object_ratio": 0.25,
+    "sparsity_target": 0.7
+  },
+
+  "decoder": {
+    "vocab_size": 50257,
+    "max_seq_len": 64,
+    "hidden_size": 384,
+    "num_layers": 4,
+    "num_heads": 8,
+    "ffn_size": 1536,
+    "dropout": 0.1,
+    "use_rope": true
+  },
+
+  "training": {
+    "batch_size": 128,
+    "lr": 2e-4,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "weight_decay": 0.01,
+    "warmup_steps": 500,
+    "num_epochs": 1000,
+    "max_steps": 10000,
+    "ema_decay": 0.999,
+    "grad_clip": 1.0,
+    "blur_sigma": 0.8,
+    "blur_warmup_steps": 0
+  },
+
+  "data": {
+    "train_file": "../train_sentences.txt",
+    "val_file": "../val_sentences.txt",
+    "num_workers": 2,
+    "file_format": "txt"
+  },
+
+  "eval": {
+    "eval_interval": 500,
+    "save_interval": 2000,
+    "num_fixed_sentences": 16
+  }
+}

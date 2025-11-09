@@ -160,8 +160,10 @@ class TextDecoder(nn.Module):
         if not use_rope:
             self.pos_embedding = nn.Embedding(max_seq_len, hidden_size)
 
-        # Visual latent projection (C=6 channels → hidden_size)
-        self.visual_projection = nn.Linear(6, hidden_size)
+        # Visual latent projection (C channels → hidden_size)
+        # Support both 1 channel (grayscale) and 6 channels (legacy)
+        self.num_visual_channels = 1  # Default to single channel
+        self.visual_projection = nn.Linear(self.num_visual_channels, hidden_size)
 
         # Decoder layers
         self.layers = nn.ModuleList([

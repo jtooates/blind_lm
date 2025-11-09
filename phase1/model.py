@@ -162,7 +162,8 @@ class GridQueryHead(nn.Module):
         self.cross_attn1 = CrossAttentionBlock(hidden_size, num_heads, dropout)
         self.cross_attn2 = CrossAttentionBlock(hidden_size, num_heads, dropout)
 
-        # Project to channels
+        # Project to channels (1 for grayscale, keep num_channels param for compatibility)
+        self.num_channels = num_channels
         self.to_channels = nn.Linear(hidden_size, num_channels)
 
         # Optional local smoothing head
@@ -224,7 +225,7 @@ class TextEncoder(nn.Module):
         ffn_size: int = 1536,
         dropout: float = 0.1,
         grid_size: int = 32,
-        num_channels: int = 6,
+        num_channels: int = 1,  # Changed to 1 for grayscale
         use_rope: bool = True,
         use_smooth_head: bool = True
     ):
