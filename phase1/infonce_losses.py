@@ -241,10 +241,12 @@ class InfoNCELoss(nn.Module):
 
         if return_components:
             return {
-                'loss': total_loss,  # Main loss key expected by train.py
-                'recon_loss': recon,
-                'infonce_loss': infonce,
-                'magnitude_loss': magnitude
+                'loss': total_loss,
+                'components': {
+                    'recon_loss': recon.item(),
+                    'infonce_loss': infonce.item(),
+                    'magnitude_loss': magnitude.item()
+                }
             }
         else:
             return total_loss
