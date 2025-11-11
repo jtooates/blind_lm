@@ -358,6 +358,109 @@ class Trainer:
         print("="*70 + "\n")
 
     @torch.no_grad()
+    def _show_training_examples(self, num_examples=5):
+        """Show reconstruction examples from training data with RGB latents"""
+        self.encoder.eval()
+        self.decoder.eval()
+
+        # Apply EMA weights
+        self.ema.apply_shadow()
+
+        # Get a batch from training data
+        train_batch = next(iter(self.train_loader))
+        train_batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                      for k, v in train_batch.items()}
+
+        # Take only num_examples from the batch
+        input_ids = train_batch['input_ids'][:num_examples]
+        attention_mask = train_batch['attention_mask'][:num_examples]
+        original_texts = train_batch['text'][:num_examples]
+
+        # Forward pass
+        latents = self.encoder(input_ids, attention_mask)
+        logits = self.decoder(latents, input_ids, attention_mask)
+
+        # Decode predictions (argmax)
+        predicted_ids = logits.argmax(dim=-1)
+
+        # Decode to text
+        predicted_texts = []
+        for i in range(predicted_ids.shape[0]):
+            pred_text = self.tokenizer.decode(predicted_ids[i], skip_special_tokens=True)
+            predicted_texts.append(pred_text)
+
+        # Restore original weights
+        self.ema.restore()
+
+        # Display with a different title
+        print("\n" + "="*70)
+        print(f"Training Data Examples (Step {self.step})")
+        print("="*70)
+
+        # Display RGB latents
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Create figure with subplots for RGB images
+        fig, axes = plt.subplots(1, num_examples, figsize=(3 * num_examples, 3))
+        if num_examples == 1:
+            axes = [axes]
+
+        for i in range(num_examples):
+            # Convert latent [H, W, C] to RGB for display
+            latent_rgb = latents[i].cpu().numpy()
+            # Normalize from [-1.5, 1.5] to [0, 1]
+            latent_rgb = (latent_rgb + 1.5) / 3.0
+            latent_rgb = np.clip(latent_rgb, 0, 1)
+
+            axes[i].imshow(latent_rgb)
+            axes[i].set_title(f'[{i+1}]', fontsize=10)
+            axes[i].axis('off')
+
+        plt.suptitle('RGB Latents (Training Data)', fontsize=12, fontweight='bold')
+        plt.tight_layout()
+
+        # Display in notebook
+        try:
+            from IPython.display import display, Image as IPImage
+            import io
+
+            # Render figure to PNG bytes
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+            buf.seek(0)
+
+            # Display the image
+            display(IPImage(buf.read()))
+            buf.close()
+            plt.close(fig)
+        except (ImportError, NameError):
+            plt.show()
+            plt.close(fig)
+
+        # Print text reconstructions
+        for i in range(num_examples):
+            orig = original_texts[i]
+            pred = predicted_texts[i]
+
+            # Check if exact match
+            match_symbol = "✓" if orig == pred else "✗"
+
+            print(f"\n[{i+1}] {match_symbol}")
+            print(f"  Original:    {orig}")
+            print(f"  Predicted:   {pred}")
+
+        # Compute accuracy
+        exact_matches = sum(1 for o, p in zip(original_texts, predicted_texts) if o == p)
+        accuracy = exact_matches / len(original_texts) * 100
+        print(f"\n  Exact match accuracy: {exact_matches}/{len(original_texts)} ({accuracy:.1f}%)")
+        print("="*70 + "\n")
+
+        # Return to training mode
+        self.encoder.train()
+        self.decoder.train()
+
+    @torch.no_grad()
     def evaluate(self):
         """Evaluate on fixed set"""
         self.encoder.eval()
@@ -431,12 +534,16 @@ class Trainer:
                 })
 
                 # Print reconstruction examples with RGB latents
+                # Use fixed eval set for metrics (consistent tracking)
                 self._print_reconstruction_examples(
                     eval_metrics['original_texts'],
                     eval_metrics['predicted_texts'],
                     eval_metrics['eval_latents'],
                     num_examples=5
                 )
+
+                # Additionally, show training examples with their latents
+                self._show_training_examples(num_examples=5)
 
                 # Save checkpoint
                 if self.step % self.config['eval']['save_interval'] == 0:
