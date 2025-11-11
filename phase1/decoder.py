@@ -144,7 +144,8 @@ class TextDecoder(nn.Module):
         num_heads: int = 8,
         ffn_size: int = 1536,
         dropout: float = 0.1,
-        use_rope: bool = True
+        use_rope: bool = True,
+        num_visual_channels: int = 3
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -161,8 +162,8 @@ class TextDecoder(nn.Module):
             self.pos_embedding = nn.Embedding(max_seq_len, hidden_size)
 
         # Visual latent projection (C channels → hidden_size)
-        # Support both 1 channel (grayscale) and 6 channels (legacy)
-        self.num_visual_channels = 1  # Default to single channel
+        # Support RGB (3), grayscale (1), or legacy (6) channels
+        self.num_visual_channels = num_visual_channels
         self.visual_projection = nn.Linear(self.num_visual_channels, hidden_size)
 
         # Decoder layers
@@ -264,7 +265,8 @@ def create_decoder(config):
         num_heads=config.get('num_heads', 8),
         ffn_size=config.get('ffn_size', 1536),
         dropout=config.get('dropout', 0.1),
-        use_rope=config.get('use_rope', True)
+        use_rope=config.get('use_rope', True),
+        num_visual_channels=config.get('num_visual_channels', 3)
     )
 
 
