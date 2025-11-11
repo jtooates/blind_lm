@@ -84,68 +84,82 @@ class InfoNCEPatchLoss(nn.Module):
         # Convert from [B, H, W, C] to [B, C, H, W] for F.unfold
         latent_chw = latent.permute(0, 3, 1, 2)  # [B, C, H, W]
 
-        batch_loss = 0.0
         pad = self.patch_size // 2
 
-        for b in range(B):
-            # Extract single image
-            img = latent_chw[b:b+1]  # [1, C, H, W]
+        # Pad and extract patches for entire batch
+        latent_padded = F.pad(latent_chw, (pad, pad, pad, pad), mode='replicate')
+        patches = F.unfold(latent_padded, kernel_size=self.patch_size, stride=1)
+        # patches: [B, C*patch_size^2, H*W]
+        patches = patches.transpose(1, 2)  # [B, H*W, C*patch_size^2]
 
-            # Pad and extract patches
-            img_padded = F.pad(img, (pad, pad, pad, pad), mode='replicate')
-            patches = F.unfold(img_padded, kernel_size=self.patch_size, stride=1)
-            # patches: [1, C*patch_size^2, H*W]
-            patches = patches.squeeze(0).t()  # [H*W, C*patch_size^2]
+        # Pre-compute all patch coordinates (shared across batch)
+        num_positions = H * W
+        y_coords = torch.arange(H, device=latent.device).unsqueeze(1).expand(H, W).reshape(-1)
+        x_coords = torch.arange(W, device=latent.device).unsqueeze(0).expand(H, W).reshape(-1)
+        all_coords = torch.stack([y_coords, x_coords], dim=1).float()  # [H*W, 2]
 
-            # Sample anchor positions
-            num_positions = H * W
-            num_samples = min(self.num_samples, num_positions)
+        # Sample anchor positions (same for all images in batch for simplicity)
+        num_samples = min(self.num_samples, num_positions)
+        anchor_indices = torch.randperm(num_positions, device=latent.device)[:num_samples]
 
-            anchor_indices = torch.randperm(num_positions, device=latent.device)[:num_samples]
-            anchor_patches = patches[anchor_indices]  # [num_samples, C*patch_size^2]
+        # Get anchor patches for entire batch: [B, num_samples, C*patch_size^2]
+        anchor_patches = patches[:, anchor_indices, :]
 
-            # Compute anchor coordinates
-            anchor_coords = torch.stack([
-                anchor_indices // W,  # y coordinates
-                anchor_indices % W    # x coordinates
-            ], dim=1).float()  # [num_samples, 2]
+        # Compute anchor coordinates
+        anchor_coords = torch.stack([
+            anchor_indices // W,  # y coordinates
+            anchor_indices % W    # x coordinates
+        ], dim=1).float()  # [num_samples, 2]
 
-            # All patch coordinates
-            y_coords = torch.arange(H, device=latent.device).unsqueeze(1).expand(H, W).reshape(-1)
-            x_coords = torch.arange(W, device=latent.device).unsqueeze(0).expand(H, W).reshape(-1)
-            all_coords = torch.stack([y_coords, x_coords], dim=1).float()  # [H*W, 2]
+        # Vectorized distance computation: [num_samples, H*W]
+        # all_coords: [H*W, 2], anchor_coords: [num_samples, 2]
+        distances = torch.cdist(anchor_coords.unsqueeze(0), all_coords.unsqueeze(0)).squeeze(0)
+        # distances: [num_samples, H*W]
 
-            # Compute InfoNCE for each anchor
-            for i in range(num_samples):
-                anchor_patch = anchor_patches[i:i+1]  # [1, C*patch_size^2]
-                anchor_coord = anchor_coords[i:i+1]   # [1, 2]
+        # Define positive and negative masks for all anchors at once
+        pos_mask = (distances > 0) & (distances <= self.positive_radius)  # [num_samples, H*W]
+        neg_mask = distances > self.negative_radius  # [num_samples, H*W]
 
-                # Compute spatial distances
-                distances = torch.norm(all_coords - anchor_coord, dim=1)  # [H*W]
+        # Normalize patches once for entire batch
+        anchor_patches_norm = F.normalize(anchor_patches, dim=2)  # [B, num_samples, C*patch_size^2]
+        patches_norm = F.normalize(patches, dim=2)  # [B, H*W, C*patch_size^2]
 
-                # Define positive and negative masks
-                pos_mask = (distances > 0) & (distances <= self.positive_radius)
-                neg_mask = distances > self.negative_radius
+        # Compute similarities for all anchors at once: [B, num_samples, H*W]
+        similarities = torch.bmm(anchor_patches_norm, patches_norm.transpose(1, 2))
 
-                if pos_mask.sum() > 0 and neg_mask.sum() > 0:
-                    # Compute cosine similarities on full RGB patches
-                    anchor_norm = F.normalize(anchor_patch, dim=1)
-                    patches_norm = F.normalize(patches, dim=1)
-                    similarities = torch.matmul(anchor_norm, patches_norm.t()).squeeze(0)  # [H*W]
+        # Apply temperature
+        similarities = similarities / self.temperature
 
-                    # Apply temperature
-                    pos_sims = similarities[pos_mask] / self.temperature
-                    neg_sims = similarities[neg_mask] / self.temperature
+        # Compute InfoNCE loss for each anchor across the batch
+        batch_loss = 0.0
+        valid_samples = 0
 
-                    # InfoNCE loss: -log(mean(exp(pos)) / (mean(exp(pos)) + mean(exp(neg))))
-                    pos_exp = torch.exp(pos_sims)
-                    neg_exp = torch.exp(neg_sims)
+        for i in range(num_samples):
+            pos_m = pos_mask[i]  # [H*W]
+            neg_m = neg_mask[i]  # [H*W]
 
-                    batch_loss += -torch.log(pos_exp.mean() / (pos_exp.mean() + neg_exp.mean() + 1e-8))
+            if pos_m.sum() > 0 and neg_m.sum() > 0:
+                # Get similarities for this anchor across batch: [B, H*W]
+                sim = similarities[:, i, :]
 
-        # Average over batch and samples
-        total_samples = B * self.num_samples
-        return batch_loss / max(total_samples, 1)
+                # Extract positive and negative similarities
+                pos_sims = sim[:, pos_m]  # [B, num_pos]
+                neg_sims = sim[:, neg_m]  # [B, num_neg]
+
+                # InfoNCE loss per batch item
+                pos_exp = torch.exp(pos_sims)
+                neg_exp = torch.exp(neg_sims)
+
+                # Average over positives and negatives, then compute log ratio
+                loss_per_batch = -torch.log(
+                    pos_exp.mean(dim=1) / (pos_exp.mean(dim=1) + neg_exp.mean(dim=1) + 1e-8)
+                )
+
+                batch_loss += loss_per_batch.sum()
+                valid_samples += B
+
+        # Average over valid samples
+        return batch_loss / max(valid_samples, 1)
 
 
 class InfoNCELoss(nn.Module):
