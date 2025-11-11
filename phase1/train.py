@@ -320,12 +320,22 @@ class Trainer:
             plt.suptitle('RGB Latents', fontsize=12, fontweight='bold')
             plt.tight_layout()
 
-            # Try IPython display for notebooks, otherwise use plt.show()
+            # Display in notebook by rendering to bytes and using IPython.display.Image
             try:
-                from IPython.display import display
-                display(fig)
+                from IPython.display import display, Image as IPImage
+                import io
+
+                # Render figure to PNG bytes
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+                buf.seek(0)
+
+                # Display the image
+                display(IPImage(buf.read()))
+                buf.close()
                 plt.close(fig)
             except (ImportError, NameError):
+                # Fallback for non-notebook environments
                 plt.show()
                 plt.close(fig)
 
