@@ -319,7 +319,15 @@ class Trainer:
 
             plt.suptitle('RGB Latents', fontsize=12, fontweight='bold')
             plt.tight_layout()
-            plt.show()
+
+            # Try IPython display for notebooks, otherwise use plt.show()
+            try:
+                from IPython.display import display
+                display(fig)
+                plt.close(fig)
+            except (ImportError, NameError):
+                plt.show()
+                plt.close(fig)
 
         # Print text reconstructions
         for i in range(num_to_show):
