@@ -18,8 +18,7 @@ import time
 
 from model import TextEncoder, create_model
 from decoder import TextDecoder, create_decoder
-from losses import ImagePriorLoss
-from object_losses import ObjectFormingLoss  # New object-forming losses
+from infonce_losses import InfoNCELoss
 from dataloader import create_dataloaders, create_fixed_eval_set
 
 
@@ -156,32 +155,18 @@ class Trainer:
         print(f"Decoder has {decoder_params:.2f}M parameters")
         print(f"Total parameters: {encoder_params + decoder_params:.2f}M")
 
-        # Create loss function - use new object-forming losses if specified
-        use_object_losses = config.get('use_object_losses', True)  # Default to new losses
-
-        if use_object_losses:
-            # Use new object-forming losses
-            self.criterion = ObjectFormingLoss(
-                lambda_sparsity=config['loss'].get('lambda_sparsity', 0.5),
-                lambda_object_size=config['loss'].get('lambda_object_size', 1.0),
-                lambda_binary=config['loss'].get('lambda_binary', 0.3),
-                lambda_contrastive=config['loss'].get('lambda_contrastive', 2.0),
-                lambda_tv=config['loss'].get('lambda_tv', 0.1),
-                lambda_recon=config['loss'].get('lambda_recon', 1.0),
-                target_object_ratio=config['loss'].get('target_object_ratio', 0.25),
-                sparsity_target=config['loss'].get('sparsity_target', 0.7)
-            ).to(self.device)
-        else:
-            # Use old image prior losses (for backward compatibility)
-            self.criterion = ImagePriorLoss(
-                lambda_spec=config['loss']['lambda_spec'],
-                lambda_tv=config['loss']['lambda_tv'],
-                lambda_wav=config['loss']['lambda_wav'],
-                lambda_kurt=config['loss']['lambda_kurt'],
-                lambda_cov=config['loss']['lambda_cov'],
-                lambda_var=config['loss']['lambda_var'],
-                lambda_recon=config['loss'].get('lambda_recon', 0.0)
-            ).to(self.device)
+        # Create loss function - InfoNCE with RGB patch coherence
+        self.criterion = InfoNCELoss(
+            lambda_recon=config['loss'].get('lambda_recon', 5.0),
+            lambda_infonce=config['loss'].get('lambda_infonce', 2.0),
+            lambda_magnitude=config['loss'].get('lambda_magnitude', 5.0),
+            patch_size=config['loss'].get('infonce_patch_size', 3),
+            num_samples=config['loss'].get('infonce_num_samples', 100),
+            temperature=config['loss'].get('infonce_temperature', 1.0),
+            positive_radius=config['loss'].get('infonce_positive_radius', 3.0),
+            negative_radius=config['loss'].get('infonce_negative_radius', 11.0),
+            min_magnitude=config['loss'].get('min_magnitude', 0.3)
+        ).to(self.device)
 
         # Create optimizer (both encoder and decoder)
         all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
