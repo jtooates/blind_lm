@@ -324,15 +324,26 @@ class Trainer:
             try:
                 from IPython.display import display, Image as IPImage
                 import io
+                import base64
 
                 # Render figure to PNG bytes
                 buf = io.BytesIO()
                 fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
                 buf.seek(0)
-
-                # Display the image
-                display(IPImage(buf.read()))
+                img_data = buf.read()
                 buf.close()
+
+                # Try multiple display methods for compatibility
+                try:
+                    # Method 1: Direct display with Image object
+                    from IPython.display import HTML
+                    encoded = base64.b64encode(img_data).decode('ascii')
+                    html = f'<img src="data:image/png;base64,{encoded}"/>'
+                    display(HTML(html))
+                except:
+                    # Method 2: Fallback to IPImage
+                    display(IPImage(data=img_data))
+
                 plt.close(fig)
             except (ImportError, NameError):
                 # Fallback for non-notebook environments
@@ -424,15 +435,26 @@ class Trainer:
         try:
             from IPython.display import display, Image as IPImage
             import io
+            import base64
 
             # Render figure to PNG bytes
             buf = io.BytesIO()
             fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
             buf.seek(0)
-
-            # Display the image
-            display(IPImage(buf.read()))
+            img_data = buf.read()
             buf.close()
+
+            # Try multiple display methods for compatibility
+            try:
+                # Method 1: Direct display with Image object
+                from IPython.display import HTML
+                encoded = base64.b64encode(img_data).decode('ascii')
+                html = f'<img src="data:image/png;base64,{encoded}"/>'
+                display(HTML(html))
+            except:
+                # Method 2: Fallback to IPImage
+                display(IPImage(data=img_data))
+
             plt.close(fig)
         except (ImportError, NameError):
             plt.show()
