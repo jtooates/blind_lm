@@ -196,7 +196,7 @@ class InfoNCELoss(nn.Module):
         self.magnitude_loss = MagnitudeLoss(min_magnitude=min_magnitude)
         self.recon_loss = nn.CrossEntropyLoss()
 
-    def forward(self, latent, logits=None, target_ids=None):
+    def forward(self, latent, logits=None, target_ids=None, return_components=False):
         """
         Compute combined loss.
 
@@ -204,23 +204,23 @@ class InfoNCELoss(nn.Module):
             latent: [B, H, W, C] RGB latent tensor
             logits: [B, seq_len, vocab_size] decoder output (optional)
             target_ids: [B, seq_len] target token IDs (optional)
+            return_components: If True, return dict with all components. If False, return just loss scalar.
 
         Returns:
-            Dictionary containing:
-                - total_loss: Combined weighted loss
-                - recon_loss: Reconstruction loss component
-                - infonce_loss: InfoNCE loss component
-                - magnitude_loss: Magnitude loss component
+            If return_components=True:
+                Dictionary containing:
+                    - loss: Combined weighted loss (main loss key for train.py)
+                    - recon_loss: Reconstruction loss component
+                    - infonce_loss: InfoNCE loss component
+                    - magnitude_loss: Magnitude loss component
+            If return_components=False:
+                Scalar tensor (combined loss)
         """
-        losses = {}
-
         # 1. InfoNCE patch coherence
         infonce = self.infonce_loss(latent)
-        losses['infonce_loss'] = infonce
 
         # 2. Magnitude
         magnitude = self.magnitude_loss(latent)
-        losses['magnitude_loss'] = magnitude
 
         # 3. Reconstruction (if decoder outputs provided)
         if logits is not None and target_ids is not None:
@@ -229,17 +229,22 @@ class InfoNCELoss(nn.Module):
                 logits.reshape(-1, vocab_size),
                 target_ids.reshape(-1)
             )
-            losses['recon_loss'] = recon
         else:
-            losses['recon_loss'] = torch.tensor(0.0, device=latent.device)
+            recon = torch.tensor(0.0, device=latent.device)
 
         # Combine losses
         total_loss = (
-            self.lambda_recon * losses['recon_loss'] +
-            self.lambda_infonce * losses['infonce_loss'] +
-            self.lambda_magnitude * losses['magnitude_loss']
+            self.lambda_recon * recon +
+            self.lambda_infonce * infonce +
+            self.lambda_magnitude * magnitude
         )
 
-        losses['total_loss'] = total_loss
-
-        return losses
+        if return_components:
+            return {
+                'loss': total_loss,  # Main loss key expected by train.py
+                'recon_loss': recon,
+                'infonce_loss': infonce,
+                'magnitude_loss': magnitude
+            }
+        else:
+            return total_loss
