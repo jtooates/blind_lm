@@ -288,13 +288,40 @@ class Trainer:
             'lr': self.optimizer.param_groups[0]['lr']
         }
 
-    def _print_reconstruction_examples(self, original_texts, predicted_texts, num_examples=5):
-        """Print side-by-side comparison of original and reconstructed text"""
+    def _print_reconstruction_examples(self, original_texts, predicted_texts, latents=None, num_examples=5):
+        """Print side-by-side comparison of original and reconstructed text with RGB latent visualization"""
         print("\n" + "="*70)
         print(f"Reconstruction Examples (Step {self.step})")
         print("="*70)
 
         num_to_show = min(num_examples, len(original_texts))
+
+        # Display RGB latents if provided
+        if latents is not None:
+            import matplotlib.pyplot as plt
+            import numpy as np
+
+            # Create figure with subplots for RGB images
+            fig, axes = plt.subplots(1, num_to_show, figsize=(3 * num_to_show, 3))
+            if num_to_show == 1:
+                axes = [axes]
+
+            for i in range(num_to_show):
+                # Convert latent [H, W, C] to RGB for display
+                latent_rgb = latents[i].numpy()  # Already on CPU from evaluate()
+                # Normalize from [-1.5, 1.5] to [0, 1]
+                latent_rgb = (latent_rgb + 1.5) / 3.0
+                latent_rgb = np.clip(latent_rgb, 0, 1)
+
+                axes[i].imshow(latent_rgb)
+                axes[i].set_title(f'[{i+1}]', fontsize=10)
+                axes[i].axis('off')
+
+            plt.suptitle('RGB Latents', fontsize=12, fontweight='bold')
+            plt.tight_layout()
+            plt.show()
+
+        # Print text reconstructions
         for i in range(num_to_show):
             orig = original_texts[i]
             pred = predicted_texts[i]
@@ -385,10 +412,11 @@ class Trainer:
                     **eval_metrics
                 })
 
-                # Print reconstruction examples
+                # Print reconstruction examples with RGB latents
                 self._print_reconstruction_examples(
                     eval_metrics['original_texts'],
                     eval_metrics['predicted_texts'],
+                    eval_metrics['eval_latents'],
                     num_examples=5
                 )
 
