@@ -260,7 +260,8 @@ class InfoNCELoss(nn.Module):
                     'recon_loss': recon.item(),
                     'infonce_loss': infonce.item(),
                     'magnitude_loss': magnitude.item()
-                }
+                },
+                'metrics': {}  # Placeholder for additional metrics if needed
             }
         else:
             return total_loss
