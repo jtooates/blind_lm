@@ -162,12 +162,14 @@ class Trainer:
             lambda_recon=config['loss'].get('lambda_recon', 5.0),
             lambda_infonce=config['loss'].get('lambda_infonce', 2.0),
             lambda_magnitude=config['loss'].get('lambda_magnitude', 5.0),
+            lambda_spatial_diversity=config['loss'].get('lambda_spatial_diversity', 0.0),
             patch_size=config['loss'].get('infonce_patch_size', 3),
             num_samples=config['loss'].get('infonce_num_samples', 100),
             temperature=config['loss'].get('infonce_temperature', 1.0),
             positive_radius=config['loss'].get('infonce_positive_radius', 3.0),
             negative_radius=config['loss'].get('infonce_negative_radius', 11.0),
-            min_magnitude=config['loss'].get('min_magnitude', 0.3)
+            min_magnitude=config['loss'].get('min_magnitude', 0.3),
+            spatial_diversity_temperature=config['loss'].get('spatial_diversity_temperature', 0.5)
         ).to(self.device)
 
         # Create optimizer (both encoder and decoder)
