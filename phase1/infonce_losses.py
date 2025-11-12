@@ -4,12 +4,15 @@ InfoNCE-based losses for RGB latent training.
 This module implements:
 - InfoNCE patch coherence loss (spatial RGB patch similarity)
 - Magnitude loss (prevents collapse to zero)
+- Spatial diversity loss (encourages different spatial patterns)
 - Combined wrapper for training
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from diversity_losses import SpatialContrastiveLoss
 
 
 class MagnitudeLoss(nn.Module):
@@ -170,17 +173,20 @@ class InfoNCELoss(nn.Module):
     - Reconstruction loss (text decoder cross-entropy)
     - InfoNCE patch coherence (spatial RGB patterns)
     - Magnitude loss (prevent collapse)
+    - Spatial diversity loss (encourages different spatial patterns across batch)
 
     Args:
         lambda_recon: Weight for reconstruction loss (default: 5.0)
         lambda_infonce: Weight for InfoNCE loss (default: 2.0)
         lambda_magnitude: Weight for magnitude loss (default: 5.0)
+        lambda_spatial_diversity: Weight for spatial diversity loss (default: 0.0)
         patch_size: Patch size for InfoNCE (default: 3)
         num_samples: Number of anchor patches for InfoNCE (default: 100)
         temperature: Temperature for InfoNCE (default: 1.0)
         positive_radius: Positive pair radius for InfoNCE (default: 3.0)
         negative_radius: Negative pair radius for InfoNCE (default: 11.0)
         min_magnitude: Minimum magnitude target (default: 0.3)
+        spatial_diversity_temperature: Temperature for spatial diversity (default: 0.5)
         pad_token_id: Token ID to ignore in reconstruction loss (default: 50256 for GPT-2 EOS)
     """
     def __init__(
@@ -188,18 +194,21 @@ class InfoNCELoss(nn.Module):
         lambda_recon=5.0,
         lambda_infonce=2.0,
         lambda_magnitude=5.0,
+        lambda_spatial_diversity=0.0,
         patch_size=3,
         num_samples=100,
         temperature=1.0,
         positive_radius=3.0,
         negative_radius=11.0,
         min_magnitude=0.3,
+        spatial_diversity_temperature=0.5,
         pad_token_id=50256  # GPT-2 EOS token (used as padding)
     ):
         super().__init__()
         self.lambda_recon = lambda_recon
         self.lambda_infonce = lambda_infonce
         self.lambda_magnitude = lambda_magnitude
+        self.lambda_spatial_diversity = lambda_spatial_diversity
 
         # Initialize loss components
         self.infonce_loss = InfoNCEPatchLoss(
@@ -210,6 +219,15 @@ class InfoNCELoss(nn.Module):
             negative_radius=negative_radius
         )
         self.magnitude_loss = MagnitudeLoss(min_magnitude=min_magnitude)
+
+        # Spatial diversity loss (only if enabled)
+        if self.lambda_spatial_diversity > 0:
+            self.spatial_diversity_loss = SpatialContrastiveLoss(
+                temperature=spatial_diversity_temperature
+            )
+        else:
+            self.spatial_diversity_loss = None
+
         # Ignore padding tokens in reconstruction loss
         self.recon_loss = nn.CrossEntropyLoss(ignore_index=pad_token_id)
 
@@ -230,6 +248,7 @@ class InfoNCELoss(nn.Module):
                     - recon_loss: Reconstruction loss component
                     - infonce_loss: InfoNCE loss component
                     - magnitude_loss: Magnitude loss component
+                    - spatial_diversity_loss: Spatial diversity loss component (if enabled)
             If return_components=False:
                 Scalar tensor (combined loss)
         """
@@ -239,7 +258,13 @@ class InfoNCELoss(nn.Module):
         # 2. Magnitude
         magnitude = self.magnitude_loss(latent)
 
-        # 3. Reconstruction (if decoder outputs provided)
+        # 3. Spatial diversity (if enabled)
+        if self.spatial_diversity_loss is not None:
+            spatial_diversity = self.spatial_diversity_loss(latent)
+        else:
+            spatial_diversity = torch.tensor(0.0, device=latent.device)
+
+        # 4. Reconstruction (if decoder outputs provided)
         if logits is not None and target_ids is not None:
             B, seq_len, vocab_size = logits.shape
             recon = self.recon_loss(
@@ -253,17 +278,23 @@ class InfoNCELoss(nn.Module):
         total_loss = (
             self.lambda_recon * recon +
             self.lambda_infonce * infonce +
-            self.lambda_magnitude * magnitude
+            self.lambda_magnitude * magnitude +
+            self.lambda_spatial_diversity * spatial_diversity
         )
 
         if return_components:
+            components_dict = {
+                'recon_loss': recon.item(),
+                'infonce_loss': infonce.item(),
+                'magnitude_loss': magnitude.item(),
+            }
+            # Only include spatial diversity if it's enabled
+            if self.spatial_diversity_loss is not None:
+                components_dict['spatial_diversity_loss'] = spatial_diversity.item()
+
             return {
                 'loss': total_loss,
-                'components': {
-                    'recon_loss': recon.item(),
-                    'infonce_loss': infonce.item(),
-                    'magnitude_loss': magnitude.item()
-                },
+                'components': components_dict,
                 'metrics': {}  # Placeholder for additional metrics if needed
             }
         else:
