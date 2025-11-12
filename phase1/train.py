@@ -17,7 +17,7 @@ from tqdm import tqdm
 import time
 
 from model import TextEncoder, create_model
-from decoder import TextDecoder, create_decoder
+from decoder_nonar import NonAutoregressiveTextDecoder, create_decoder
 from infonce_losses import InfoNCELoss
 from dataloader import create_dataloaders, create_fixed_eval_set
 
