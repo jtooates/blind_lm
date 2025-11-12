@@ -540,11 +540,18 @@ class Trainer:
             metrics = self.train_step(batch)
             epoch_metrics.append(metrics)
 
-            # Update progress bar
-            pbar.set_postfix({
+            # Update progress bar with all loss components
+            postfix_dict = {
                 'loss': f"{metrics['loss']:.4f}",
-                'lr': f"{metrics['lr']:.2e}"
-            })
+                'recon': f"{metrics.get('recon_loss', 0):.3f}",
+                'info': f"{metrics.get('infonce_loss', 0):.3f}",
+                'mag': f"{metrics.get('magnitude_loss', 0):.3f}",
+            }
+            # Add spatial diversity if present
+            if 'spatial_diversity_loss' in metrics:
+                postfix_dict['spatial_div'] = f"{metrics['spatial_diversity_loss']:.3f}"
+            postfix_dict['lr'] = f"{metrics['lr']:.2e}"
+            pbar.set_postfix(postfix_dict)
 
             # Evaluate periodically
             if self.step % self.config['eval']['eval_interval'] == 0:
