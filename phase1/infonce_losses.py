@@ -181,6 +181,7 @@ class InfoNCELoss(nn.Module):
         positive_radius: Positive pair radius for InfoNCE (default: 3.0)
         negative_radius: Negative pair radius for InfoNCE (default: 11.0)
         min_magnitude: Minimum magnitude target (default: 0.3)
+        pad_token_id: Token ID to ignore in reconstruction loss (default: 50256 for GPT-2 EOS)
     """
     def __init__(
         self,
@@ -192,7 +193,8 @@ class InfoNCELoss(nn.Module):
         temperature=1.0,
         positive_radius=3.0,
         negative_radius=11.0,
-        min_magnitude=0.3
+        min_magnitude=0.3,
+        pad_token_id=50256  # GPT-2 EOS token (used as padding)
     ):
         super().__init__()
         self.lambda_recon = lambda_recon
@@ -208,7 +210,8 @@ class InfoNCELoss(nn.Module):
             negative_radius=negative_radius
         )
         self.magnitude_loss = MagnitudeLoss(min_magnitude=min_magnitude)
-        self.recon_loss = nn.CrossEntropyLoss()
+        # Ignore padding tokens in reconstruction loss
+        self.recon_loss = nn.CrossEntropyLoss(ignore_index=pad_token_id)
 
     def forward(self, latent, logits=None, target_ids=None, return_components=False):
         """
