@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from diversity_losses import SpatialContrastiveLoss
+from batch_infonce_loss import BatchInfoNCELoss
 
 
 class MagnitudeLoss(nn.Module):
@@ -180,6 +181,7 @@ class InfoNCELoss(nn.Module):
         lambda_infonce: Weight for InfoNCE loss (default: 2.0)
         lambda_magnitude: Weight for magnitude loss (default: 5.0)
         lambda_spatial_diversity: Weight for spatial diversity loss (default: 0.0)
+        lambda_batch_infonce: Weight for batch InfoNCE loss (default: 0.0)
         patch_size: Patch size for InfoNCE (default: 3)
         num_samples: Number of anchor patches for InfoNCE (default: 100)
         temperature: Temperature for InfoNCE (default: 1.0)
@@ -187,6 +189,12 @@ class InfoNCELoss(nn.Module):
         negative_radius: Negative pair radius for InfoNCE (default: 11.0)
         min_magnitude: Minimum magnitude target (default: 0.3)
         spatial_diversity_temperature: Temperature for spatial diversity (default: 0.5)
+        batch_infonce_within_weight: Weight for within-image component of batch InfoNCE (default: 1.0)
+        batch_infonce_across_weight: Weight for cross-image component of batch InfoNCE (default: 1.0)
+        batch_infonce_temperature_within: Temperature for within-image similarity (default: 1.0)
+        batch_infonce_temperature_across: Temperature for cross-image similarity (default: 0.5)
+        batch_infonce_cross_image_radius: Spatial tolerance for cross-image negatives (default: 2.0)
+        batch_infonce_num_cross_images: Number of other images to sample (default: 8)
         pad_token_id: Token ID to ignore in reconstruction loss (default: 50256 for GPT-2 EOS)
     """
     def __init__(
@@ -195,6 +203,7 @@ class InfoNCELoss(nn.Module):
         lambda_infonce=2.0,
         lambda_magnitude=5.0,
         lambda_spatial_diversity=0.0,
+        lambda_batch_infonce=0.0,
         patch_size=3,
         num_samples=100,
         temperature=1.0,
@@ -202,6 +211,12 @@ class InfoNCELoss(nn.Module):
         negative_radius=11.0,
         min_magnitude=0.3,
         spatial_diversity_temperature=0.5,
+        batch_infonce_within_weight=1.0,
+        batch_infonce_across_weight=1.0,
+        batch_infonce_temperature_within=1.0,
+        batch_infonce_temperature_across=0.5,
+        batch_infonce_cross_image_radius=2.0,
+        batch_infonce_num_cross_images=8,
         pad_token_id=50256  # GPT-2 EOS token (used as padding)
     ):
         super().__init__()
@@ -209,6 +224,7 @@ class InfoNCELoss(nn.Module):
         self.lambda_infonce = lambda_infonce
         self.lambda_magnitude = lambda_magnitude
         self.lambda_spatial_diversity = lambda_spatial_diversity
+        self.lambda_batch_infonce = lambda_batch_infonce
 
         # Initialize loss components
         self.infonce_loss = InfoNCEPatchLoss(
@@ -227,6 +243,23 @@ class InfoNCELoss(nn.Module):
             )
         else:
             self.spatial_diversity_loss = None
+
+        # Batch InfoNCE loss (only if enabled)
+        if self.lambda_batch_infonce > 0:
+            self.batch_infonce_loss = BatchInfoNCELoss(
+                within_weight=batch_infonce_within_weight,
+                across_weight=batch_infonce_across_weight,
+                patch_size=patch_size,
+                num_samples=num_samples,
+                temperature_within=batch_infonce_temperature_within,
+                temperature_across=batch_infonce_temperature_across,
+                positive_radius=positive_radius,
+                negative_radius=negative_radius,
+                cross_image_radius=batch_infonce_cross_image_radius,
+                num_cross_images=batch_infonce_num_cross_images
+            )
+        else:
+            self.batch_infonce_loss = None
 
         # Ignore padding tokens in reconstruction loss
         self.recon_loss = nn.CrossEntropyLoss(ignore_index=pad_token_id)
@@ -249,6 +282,7 @@ class InfoNCELoss(nn.Module):
                     - infonce_loss: InfoNCE loss component
                     - magnitude_loss: Magnitude loss component
                     - spatial_diversity_loss: Spatial diversity loss component (if enabled)
+                    - batch_infonce_loss: Batch InfoNCE loss component (if enabled)
             If return_components=False:
                 Scalar tensor (combined loss)
         """
@@ -264,7 +298,13 @@ class InfoNCELoss(nn.Module):
         else:
             spatial_diversity = torch.tensor(0.0, device=latent.device)
 
-        # 4. Reconstruction (if decoder outputs provided)
+        # 4. Batch InfoNCE (if enabled)
+        if self.batch_infonce_loss is not None:
+            batch_infonce = self.batch_infonce_loss(latent)
+        else:
+            batch_infonce = torch.tensor(0.0, device=latent.device)
+
+        # 5. Reconstruction (if decoder outputs provided)
         if logits is not None and target_ids is not None:
             B, seq_len, vocab_size = logits.shape
             recon = self.recon_loss(
@@ -279,7 +319,8 @@ class InfoNCELoss(nn.Module):
             self.lambda_recon * recon +
             self.lambda_infonce * infonce +
             self.lambda_magnitude * magnitude +
-            self.lambda_spatial_diversity * spatial_diversity
+            self.lambda_spatial_diversity * spatial_diversity +
+            self.lambda_batch_infonce * batch_infonce
         )
 
         if return_components:
@@ -288,9 +329,11 @@ class InfoNCELoss(nn.Module):
                 'infonce_loss': infonce.item(),
                 'magnitude_loss': magnitude.item(),
             }
-            # Only include spatial diversity if it's enabled
+            # Only include optional losses if they're enabled
             if self.spatial_diversity_loss is not None:
                 components_dict['spatial_diversity_loss'] = spatial_diversity.item()
+            if self.batch_infonce_loss is not None:
+                components_dict['batch_infonce_loss'] = batch_infonce.item()
 
             return {
                 'loss': total_loss,
