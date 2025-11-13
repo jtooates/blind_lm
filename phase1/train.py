@@ -319,38 +319,16 @@ class Trainer:
                 axes[i].set_title(f'[{i+1}]', fontsize=10)
                 axes[i].axis('off')
 
-            plt.suptitle('RGB Latents', fontsize=12, fontweight='bold')
+            plt.suptitle(f'RGB Latents (Step {self.step})', fontsize=12, fontweight='bold')
             plt.tight_layout()
 
-            # Display in notebook by rendering to bytes and using IPython.display.Image
-            try:
-                from IPython.display import display, Image as IPImage
-                import io
-                import base64
-
-                # Render figure to PNG bytes
-                buf = io.BytesIO()
-                fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-                buf.seek(0)
-                img_data = buf.read()
-                buf.close()
-
-                # Try multiple display methods for compatibility
-                try:
-                    # Method 1: Direct display with Image object
-                    from IPython.display import HTML
-                    encoded = base64.b64encode(img_data).decode('ascii')
-                    html = f'<img src="data:image/png;base64,{encoded}"/>'
-                    display(HTML(html))
-                except:
-                    # Method 2: Fallback to IPImage
-                    display(IPImage(data=img_data))
-
-                plt.close(fig)
-            except (ImportError, NameError):
-                # Fallback for non-notebook environments
-                plt.show()
-                plt.close(fig)
+            # Save to file instead of displaying
+            eval_dir = self.output_dir / 'eval_images'
+            eval_dir.mkdir(exist_ok=True)
+            save_path = eval_dir / f'latents_step_{self.step:06d}.png'
+            fig.savefig(save_path, dpi=100, bbox_inches='tight')
+            print(f"Saved latent visualization to: {save_path}")
+            plt.close(fig)
 
         # Print text reconstructions
         for i in range(num_to_show):
@@ -430,37 +408,16 @@ class Trainer:
             axes[i].set_title(f'[{i+1}]', fontsize=10)
             axes[i].axis('off')
 
-        plt.suptitle('RGB Latents (Training Data)', fontsize=12, fontweight='bold')
+        plt.suptitle(f'RGB Latents - Training Data (Step {self.step})', fontsize=12, fontweight='bold')
         plt.tight_layout()
 
-        # Display in notebook
-        try:
-            from IPython.display import display, Image as IPImage
-            import io
-            import base64
-
-            # Render figure to PNG bytes
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            buf.seek(0)
-            img_data = buf.read()
-            buf.close()
-
-            # Try multiple display methods for compatibility
-            try:
-                # Method 1: Direct display with Image object
-                from IPython.display import HTML
-                encoded = base64.b64encode(img_data).decode('ascii')
-                html = f'<img src="data:image/png;base64,{encoded}"/>'
-                display(HTML(html))
-            except:
-                # Method 2: Fallback to IPImage
-                display(IPImage(data=img_data))
-
-            plt.close(fig)
-        except (ImportError, NameError):
-            plt.show()
-            plt.close(fig)
+        # Save to file instead of displaying
+        train_vis_dir = self.output_dir / 'train_images'
+        train_vis_dir.mkdir(exist_ok=True)
+        save_path = train_vis_dir / f'train_latents_step_{self.step:06d}.png'
+        fig.savefig(save_path, dpi=100, bbox_inches='tight')
+        print(f"Saved training latent visualization to: {save_path}")
+        plt.close(fig)
 
         # Print text reconstructions
         for i in range(num_examples):
