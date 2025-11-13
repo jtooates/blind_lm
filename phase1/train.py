@@ -513,9 +513,11 @@ class Trainer:
                 'info': f"{metrics.get('infonce_loss', 0):.3f}",
                 'mag': f"{metrics.get('magnitude_loss', 0):.3f}",
             }
-            # Add spatial diversity if present
+            # Add optional loss components if present
             if 'spatial_diversity_loss' in metrics:
                 postfix_dict['spatial_div'] = f"{metrics['spatial_diversity_loss']:.3f}"
+            if 'batch_infonce_loss' in metrics:
+                postfix_dict['batch_info'] = f"{metrics['batch_infonce_loss']:.3f}"
             postfix_dict['lr'] = f"{metrics['lr']:.2e}"
             pbar.set_postfix(postfix_dict)
 
