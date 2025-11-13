@@ -286,11 +286,17 @@ class InfoNCELoss(nn.Module):
             If return_components=False:
                 Scalar tensor (combined loss)
         """
-        # 1. InfoNCE patch coherence
-        infonce = self.infonce_loss(latent)
+        # 1. InfoNCE patch coherence (only compute if enabled)
+        if self.lambda_infonce > 0:
+            infonce = self.infonce_loss(latent)
+        else:
+            infonce = torch.tensor(0.0, device=latent.device)
 
-        # 2. Magnitude
-        magnitude = self.magnitude_loss(latent)
+        # 2. Magnitude (only compute if enabled)
+        if self.lambda_magnitude > 0:
+            magnitude = self.magnitude_loss(latent)
+        else:
+            magnitude = torch.tensor(0.0, device=latent.device)
 
         # 3. Spatial diversity (if enabled)
         if self.spatial_diversity_loss is not None:

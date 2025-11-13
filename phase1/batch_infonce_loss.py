@@ -64,7 +64,7 @@ class BatchInfoNCELoss(nn.Module):
 
     def forward(self, latents):
         """
-        Compute batch InfoNCE loss.
+        Compute batch InfoNCE loss (vectorized version).
 
         Args:
             latents: [B, H, W, C] tensor of RGB latents
@@ -98,109 +98,109 @@ class BatchInfoNCELoss(nn.Module):
         x_coords = torch.arange(W, device=latents.device).unsqueeze(0).expand(H, W).reshape(-1)
         all_coords = torch.stack([y_coords, x_coords], dim=1).float()  # [H*W, 2]
 
+        # Sample anchor positions (same for all images to enable vectorization)
+        n_samples = min(self.num_samples, num_positions)
+        anchor_indices = torch.randperm(num_positions, device=latents.device)[:n_samples]
+
+        # Get anchors for all images: [B, n_samples, C*patch_size^2]
+        anchor_patches_norm = patches_norm[:, anchor_indices, :]
+        anchor_coords = all_coords[anchor_indices]  # [n_samples, 2]
+
+        # Compute pairwise distances: [n_samples, H*W]
+        # Broadcasting: [n_samples, 1, 2] - [1, H*W, 2] -> [n_samples, H*W]
+        distances = torch.norm(
+            anchor_coords.unsqueeze(1) - all_coords.unsqueeze(0),
+            dim=2
+        )
+
+        # Create masks for all anchors at once
+        pos_mask = (distances > 0) & (distances <= self.positive_radius)  # [n_samples, H*W]
+        neg_within_mask = distances > self.negative_radius  # [n_samples, H*W]
+        cross_mask = distances <= self.cross_image_radius  # [n_samples, H*W]
+
+        # === VECTORIZED SIMILARITY COMPUTATION ===
+
+        # Compute all within-image similarities at once
+        # [B, n_samples, C*patch_size^2] @ [B, C*patch_size^2, H*W] -> [B, n_samples, H*W]
+        similarities_within = torch.bmm(anchor_patches_norm, patches_norm.transpose(1, 2))
+
+        # Sample K other images for cross-image negatives
+        K = min(self.num_cross_images, B - 1)
+
         total_loss = 0.0
         num_valid_anchors = 0
 
-        # Process each image in batch
+        # Process each image's anchors
         for b in range(B):
-            image_patches_norm = patches_norm[b]  # [H*W, C*patch_size^2]
+            # Get similarities for this image's anchors: [n_samples, H*W]
+            sims_within = similarities_within[b]
 
-            # Sample anchor positions for this image
-            n_samples = min(self.num_samples, num_positions)
-            anchor_indices = torch.randperm(num_positions, device=latents.device)[:n_samples]
-            anchor_patches_norm = image_patches_norm[anchor_indices]  # [n_samples, C*patch_size^2]
-            anchor_coords = all_coords[anchor_indices]  # [n_samples, 2]
+            # Sample K other images (different for each b to get variety)
+            other_indices = [idx for idx in range(B) if idx != b]
+            if len(other_indices) > K:
+                other_indices = torch.tensor(other_indices, device=latents.device)
+                sampled_other = other_indices[torch.randperm(len(other_indices))[:K]].tolist()
+            else:
+                sampled_other = other_indices
 
-            # For each anchor
+            # Get cross-image patches: [K, H*W, C*patch_size^2]
+            cross_patches = patches_norm[sampled_other]
+
+            # Compute cross-image similarities: [n_samples, K, H*W]
+            # [n_samples, 1, C*patch_size^2] @ [1, K, C*patch_size^2, H*W]
+            anchors_expanded = anchor_patches_norm[b].unsqueeze(1)  # [n_samples, 1, C*patch_size^2]
+            cross_patches_T = cross_patches.transpose(1, 2)  # [K, C*patch_size^2, H*W]
+
+            # [n_samples, C*patch_size^2] @ [K, C*patch_size^2, H*W] -> [n_samples, K, H*W]
+            sims_across = torch.einsum('nc,kcp->nkp', anchor_patches_norm[b], cross_patches_T)
+
+            # Process each anchor (still need this loop but inner operations are vectorized)
             for i in range(n_samples):
-                anchor_patch = anchor_patches_norm[i:i+1]  # [1, C*patch_size^2]
-                anchor_coord = anchor_coords[i:i+1]  # [1, 2]
+                # Get masks for this anchor
+                pos_m = pos_mask[i]
+                neg_within_m = neg_within_mask[i]
+                cross_m = cross_mask[i]
 
-                # === WITHIN-IMAGE POSITIVES AND NEGATIVES ===
+                # Skip if no positives
+                if not pos_m.any():
+                    continue
 
-                # Compute distances to all patches in same image
-                distances = torch.norm(all_coords - anchor_coord, dim=1)  # [H*W]
+                # Get similarities for this anchor
+                sims_w = sims_within[i]
 
-                # Positive mask: nearby but not self
-                pos_mask = (distances > 0) & (distances <= self.positive_radius)
+                # Positive and within-image negative similarities
+                pos_sims = sims_w[pos_m] / self.temperature_within
 
-                # Negative mask: far away
-                neg_within_mask = distances > self.negative_radius
-
-                # === CROSS-IMAGE NEGATIVES ===
-
-                # Sample K other images
-                other_image_indices = [idx for idx in range(B) if idx != b]
-                if len(other_image_indices) > self.num_cross_images:
-                    other_image_indices = torch.tensor(other_image_indices, device=latents.device)
-                    sampled_indices = other_image_indices[torch.randperm(len(other_image_indices))[:self.num_cross_images]]
-                else:
-                    sampled_indices = other_image_indices
-
-                # Collect cross-image negative patches
-                cross_image_patches = []
-                for other_b in sampled_indices:
-                    other_patches_norm = patches_norm[other_b]  # [H*W, C*patch_size^2]
-
-                    # Find patches at similar spatial locations
-                    cross_distances = torch.norm(all_coords - anchor_coord, dim=1)
-                    cross_mask = cross_distances <= self.cross_image_radius
-
-                    if cross_mask.sum() > 0:
-                        cross_image_patches.append(other_patches_norm[cross_mask])
-
-                # Check if we have enough samples
-                if pos_mask.sum() == 0:
-                    continue  # Skip if no positives
-
-                if neg_within_mask.sum() == 0 and len(cross_image_patches) == 0:
-                    continue  # Skip if no negatives
-
-                # === COMPUTE SIMILARITIES ===
-
-                # Similarities to all patches in same image
-                similarities_within = torch.matmul(anchor_patch, image_patches_norm.t()).squeeze(0)  # [H*W]
-
-                # Positive similarities (within-image, nearby)
-                pos_sims = similarities_within[pos_mask] / self.temperature_within
-
-                # Negative similarities (within-image, far)
-                neg_within_sims = similarities_within[neg_within_mask] / self.temperature_within
-
-                # Negative similarities (cross-image, similar location)
-                neg_across_sims = []
-                for cross_patches in cross_image_patches:
-                    sims = torch.matmul(anchor_patch, cross_patches.t()).squeeze(0)
-                    neg_across_sims.append(sims / self.temperature_across)
-
-                # === COMPUTE LOSS ===
-
-                # Within-image InfoNCE component
+                # Within-image loss
                 loss_within = 0.0
-                if self.within_weight > 0 and neg_within_mask.sum() > 0:
+                if self.within_weight > 0 and neg_within_m.any():
+                    neg_within_sims = sims_w[neg_within_m] / self.temperature_within
                     pos_exp = torch.exp(pos_sims)
                     neg_exp = torch.exp(neg_within_sims)
-
-                    # InfoNCE: -log(mean(pos) / (mean(pos) + mean(neg)))
                     loss_within = -torch.log(
                         pos_exp.mean() / (pos_exp.mean() + neg_exp.mean() + 1e-8)
                     )
 
-                # Cross-image InfoNCE component
+                # Cross-image loss
                 loss_across = 0.0
-                if self.across_weight > 0 and len(neg_across_sims) > 0:
-                    pos_exp = torch.exp(pos_sims)
+                if self.across_weight > 0:
+                    # Get cross-image similarities at matching locations: [K, H*W]
+                    sims_cross = sims_across[i]  # [K, H*W]
 
-                    # Combine all cross-image negatives
-                    all_neg_across = torch.cat(neg_across_sims)
-                    neg_across_exp = torch.exp(all_neg_across)
+                    # Apply spatial mask and flatten: [K*num_cross_positions]
+                    cross_sims_masked = sims_cross[:, cross_m].reshape(-1) / self.temperature_across
 
-                    # InfoNCE with cross-image negatives
-                    loss_across = -torch.log(
-                        pos_exp.mean() / (pos_exp.mean() + neg_across_exp.mean() + 1e-8)
-                    )
+                    if cross_sims_masked.numel() > 0:
+                        pos_exp = torch.exp(pos_sims)
+                        neg_across_exp = torch.exp(cross_sims_masked)
+                        loss_across = -torch.log(
+                            pos_exp.mean() / (pos_exp.mean() + neg_across_exp.mean() + 1e-8)
+                        )
 
-                # Weighted combination
+                # Skip if no loss components
+                if loss_within == 0.0 and loss_across == 0.0:
+                    continue
+
                 total_loss += self.within_weight * loss_within + self.across_weight * loss_across
                 num_valid_anchors += 1
 
