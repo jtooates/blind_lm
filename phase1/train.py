@@ -236,7 +236,8 @@ class Trainer:
         # Fixed evaluation set
         self.eval_set = create_fixed_eval_set(
             self.tokenizer,
-            num_sentences=config['eval'].get('num_fixed_sentences', 16)
+            num_sentences=config['eval'].get('num_fixed_sentences', 16),
+            max_length=config['model']['max_seq_len']
         )
 
         # Metrics tracking

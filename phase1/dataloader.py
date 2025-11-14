@@ -273,13 +273,14 @@ def create_dataloaders(
     return dataloaders, tokenizer
 
 
-def create_fixed_eval_set(tokenizer, num_sentences: int = 16) -> FixedEvaluationSet:
+def create_fixed_eval_set(tokenizer, num_sentences: int = 16, max_length: int = 64) -> FixedEvaluationSet:
     """
     Create a fixed evaluation set for consistent visualization.
 
     Args:
         tokenizer: HuggingFace tokenizer
         num_sentences: Number of sentences in evaluation set
+        max_length: Maximum sequence length for tokenization
 
     Returns:
         FixedEvaluationSet
@@ -307,7 +308,7 @@ def create_fixed_eval_set(tokenizer, num_sentences: int = 16) -> FixedEvaluation
     # Trim to requested number
     fixed_sentences = fixed_sentences[:num_sentences]
 
-    return FixedEvaluationSet(fixed_sentences, tokenizer)
+    return FixedEvaluationSet(fixed_sentences, tokenizer, max_length)
 
 
 if __name__ == "__main__":
