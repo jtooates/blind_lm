@@ -171,10 +171,7 @@ class Trainer:
             negative_radius=config['loss'].get('infonce_negative_radius', 11.0),
             min_magnitude=config['loss'].get('min_magnitude', 0.3),
             spatial_diversity_temperature=config['loss'].get('spatial_diversity_temperature', 0.5),
-            batch_infonce_within_weight=config['loss'].get('batch_infonce_within_weight', 1.0),
-            batch_infonce_across_weight=config['loss'].get('batch_infonce_across_weight', 1.0),
-            batch_infonce_temperature_within=config['loss'].get('batch_infonce_temperature_within', 1.0),
-            batch_infonce_temperature_across=config['loss'].get('batch_infonce_temperature_across', 0.5),
+            batch_infonce_temperature=config['loss'].get('batch_infonce_temperature', 0.5),
             batch_infonce_cross_image_radius=config['loss'].get('batch_infonce_cross_image_radius', 2.0),
             batch_infonce_num_cross_images=config['loss'].get('batch_infonce_num_cross_images', 8)
         ).to(self.device)

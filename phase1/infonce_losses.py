@@ -172,16 +172,17 @@ class InfoNCELoss(nn.Module):
 
     Combines:
     - Reconstruction loss (text decoder cross-entropy)
-    - InfoNCE patch coherence (spatial RGB patterns)
+    - InfoNCE patch coherence (within-image: nearby similar, distant different)
+    - Batch InfoNCE (cross-image: corresponding locations look different)
     - Magnitude loss (prevent collapse)
-    - Spatial diversity loss (encourages different spatial patterns across batch)
+    - Spatial diversity loss (optional legacy loss)
 
     Args:
         lambda_recon: Weight for reconstruction loss (default: 5.0)
-        lambda_infonce: Weight for InfoNCE loss (default: 2.0)
+        lambda_infonce: Weight for InfoNCE loss - within-image coherence (default: 2.0)
         lambda_magnitude: Weight for magnitude loss (default: 5.0)
         lambda_spatial_diversity: Weight for spatial diversity loss (default: 0.0)
-        lambda_batch_infonce: Weight for batch InfoNCE loss (default: 0.0)
+        lambda_batch_infonce: Weight for batch InfoNCE - cross-image diversity (default: 0.0)
         patch_size: Patch size for InfoNCE (default: 3)
         num_samples: Number of anchor patches for InfoNCE (default: 100)
         temperature: Temperature for InfoNCE (default: 1.0)
@@ -189,10 +190,7 @@ class InfoNCELoss(nn.Module):
         negative_radius: Negative pair radius for InfoNCE (default: 11.0)
         min_magnitude: Minimum magnitude target (default: 0.3)
         spatial_diversity_temperature: Temperature for spatial diversity (default: 0.5)
-        batch_infonce_within_weight: Weight for within-image component of batch InfoNCE (default: 1.0)
-        batch_infonce_across_weight: Weight for cross-image component of batch InfoNCE (default: 1.0)
-        batch_infonce_temperature_within: Temperature for within-image similarity (default: 1.0)
-        batch_infonce_temperature_across: Temperature for cross-image similarity (default: 0.5)
+        batch_infonce_temperature: Temperature for cross-image similarity (default: 0.5)
         batch_infonce_cross_image_radius: Spatial tolerance for cross-image negatives (default: 2.0)
         batch_infonce_num_cross_images: Number of other images to sample (default: 8)
         pad_token_id: Token ID to ignore in reconstruction loss (default: 50256 for GPT-2 EOS)
@@ -211,10 +209,7 @@ class InfoNCELoss(nn.Module):
         negative_radius=11.0,
         min_magnitude=0.3,
         spatial_diversity_temperature=0.5,
-        batch_infonce_within_weight=1.0,
-        batch_infonce_across_weight=1.0,
-        batch_infonce_temperature_within=1.0,
-        batch_infonce_temperature_across=0.5,
+        batch_infonce_temperature=0.5,
         batch_infonce_cross_image_radius=2.0,
         batch_infonce_num_cross_images=8,
         pad_token_id=50256  # GPT-2 EOS token (used as padding)
@@ -245,16 +240,12 @@ class InfoNCELoss(nn.Module):
             self.spatial_diversity_loss = None
 
         # Batch InfoNCE loss (only if enabled)
+        # This now ONLY handles cross-image diversity
         if self.lambda_batch_infonce > 0:
             self.batch_infonce_loss = BatchInfoNCELoss(
-                within_weight=batch_infonce_within_weight,
-                across_weight=batch_infonce_across_weight,
                 patch_size=patch_size,
                 num_samples=num_samples,
-                temperature_within=batch_infonce_temperature_within,
-                temperature_across=batch_infonce_temperature_across,
-                positive_radius=positive_radius,
-                negative_radius=negative_radius,
+                temperature=batch_infonce_temperature,
                 cross_image_radius=batch_infonce_cross_image_radius,
                 num_cross_images=batch_infonce_num_cross_images
             )
