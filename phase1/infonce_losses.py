@@ -43,6 +43,137 @@ class MagnitudeLoss(nn.Module):
         return loss
 
 
+class InfoNCEPatchLossL2(nn.Module):
+    """
+    InfoNCE-style patch loss using L2 distance instead of cosine similarity.
+
+    This variant constrains both direction AND magnitude of patches,
+    preventing the model from exploiting magnitude variations (checkerboards)
+    while satisfying cosine similarity constraints.
+
+    For each anchor patch:
+    - Positives: nearby patches (within positive_radius pixels)
+    - Negatives: distant patches (beyond negative_radius pixels)
+    - Similarity: negative squared L2 distance (closer = higher similarity)
+
+    Args:
+        patch_size: Patch size (default: 3)
+        num_samples: Number of anchor patches to sample (default: 100)
+        temperature: Temperature for scaling distances (default: 1.0)
+        positive_radius: Max spatial distance for positive pairs (default: 3.0)
+        negative_radius: Min spatial distance for negative pairs (default: 11.0)
+    """
+    def __init__(
+        self,
+        patch_size=3,
+        num_samples=100,
+        temperature=1.0,
+        positive_radius=3.0,
+        negative_radius=11.0
+    ):
+        super().__init__()
+        self.patch_size = patch_size
+        self.num_samples = num_samples
+        self.temperature = temperature
+        self.positive_radius = positive_radius
+        self.negative_radius = negative_radius
+
+    def forward(self, latent):
+        """
+        Args:
+            latent: [B, H, W, C] tensor (typically C=3 for RGB)
+
+        Returns:
+            Scalar loss value
+        """
+        B, H, W, C = latent.shape
+
+        # Convert from [B, H, W, C] to [B, C, H, W] for F.unfold
+        latent_chw = latent.permute(0, 3, 1, 2)  # [B, C, H, W]
+
+        pad = self.patch_size // 2
+
+        # Pad and extract patches for entire batch
+        latent_padded = F.pad(latent_chw, (pad, pad, pad, pad), mode='replicate')
+        patches = F.unfold(latent_padded, kernel_size=self.patch_size, stride=1)
+        # patches: [B, C*patch_size^2, H*W]
+        patches = patches.transpose(1, 2)  # [B, H*W, C*patch_size^2]
+
+        # Pre-compute all patch coordinates (shared across batch)
+        num_positions = H * W
+        y_coords = torch.arange(H, device=latent.device).unsqueeze(1).expand(H, W).reshape(-1)
+        x_coords = torch.arange(W, device=latent.device).unsqueeze(0).expand(H, W).reshape(-1)
+        all_coords = torch.stack([y_coords, x_coords], dim=1).float()  # [H*W, 2]
+
+        # Sample anchor positions (same for all images in batch for simplicity)
+        num_samples = min(self.num_samples, num_positions)
+        anchor_indices = torch.randperm(num_positions, device=latent.device)[:num_samples]
+
+        # Get anchor patches for entire batch: [B, num_samples, C*patch_size^2]
+        anchor_patches = patches[:, anchor_indices, :]
+
+        # Compute anchor coordinates
+        anchor_coords = torch.stack([
+            anchor_indices // W,  # y coordinates
+            anchor_indices % W    # x coordinates
+        ], dim=1).float()  # [num_samples, 2]
+
+        # Vectorized spatial distance computation: [num_samples, H*W]
+        spatial_distances = torch.cdist(anchor_coords.unsqueeze(0), all_coords.unsqueeze(0)).squeeze(0)
+
+        # Define positive and negative masks for all anchors at once
+        pos_mask = (spatial_distances > 0) & (spatial_distances <= self.positive_radius)  # [num_samples, H*W]
+        neg_mask = spatial_distances > self.negative_radius  # [num_samples, H*W]
+
+        # NO NORMALIZATION - use raw patches to preserve magnitude
+        # Compute L2 distances for all anchors at once: [B, num_samples, H*W]
+        # Use negative squared L2 distance as similarity (closer = higher)
+        # anchor_patches: [B, num_samples, C*patch_size^2]
+        # patches: [B, H*W, C*patch_size^2]
+
+        # Compute pairwise squared L2 distances
+        # Expand dimensions for broadcasting
+        anchor_expanded = anchor_patches.unsqueeze(2)  # [B, num_samples, 1, C*patch_size^2]
+        patches_expanded = patches.unsqueeze(1)  # [B, 1, H*W, C*patch_size^2]
+
+        # Squared L2 distance
+        sq_distances = ((anchor_expanded - patches_expanded) ** 2).sum(dim=3)  # [B, num_samples, H*W]
+
+        # Convert to similarity (negative distance, scaled by temperature)
+        similarities = -sq_distances / self.temperature
+
+        # Compute InfoNCE loss for each anchor across the batch
+        batch_loss = 0.0
+        valid_samples = 0
+
+        for i in range(num_samples):
+            pos_m = pos_mask[i]  # [H*W]
+            neg_m = neg_mask[i]  # [H*W]
+
+            if pos_m.sum() > 0 and neg_m.sum() > 0:
+                # Get similarities for this anchor across batch: [B, H*W]
+                sim = similarities[:, i, :]
+
+                # Extract positive and negative similarities
+                pos_sims = sim[:, pos_m]  # [B, num_pos]
+                neg_sims = sim[:, neg_m]  # [B, num_neg]
+
+                # InfoNCE loss per batch item
+                pos_exp = torch.exp(pos_sims)
+                neg_exp = torch.exp(neg_sims)
+
+                # Average over positives and negatives, then compute log ratio
+                loss_per_batch = -torch.log(
+                    pos_exp.mean(dim=1) / (pos_exp.mean(dim=1) + neg_exp.mean(dim=1) + 1e-8)
+                )
+
+                batch_loss += loss_per_batch.sum()
+                valid_samples += B
+
+        # Average over valid samples
+        return batch_loss / max(valid_samples, 1)
+
+
 class InfoNCEPatchLoss(nn.Module):
     """
     InfoNCE contrastive loss for spatial patch coherence.
