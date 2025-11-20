@@ -18,7 +18,8 @@ import time
 
 from model import TextEncoder, create_model
 from decoder_nonar import NonAutoregressiveTextDecoder, create_decoder
-from infonce_losses import InfoNCELoss
+from infonce_losses import MagnitudeLoss
+from mumford_shah_loss import MumfordShahLoss
 from dataloader import create_dataloaders, create_fixed_eval_set
 
 
@@ -126,6 +127,22 @@ class GaussianBlur(nn.Module):
         return blurred
 
 
+def add_jitter(latent, std):
+    """
+    Add Gaussian noise to latent for regularization.
+
+    Args:
+        latent: [B, H, W, C] tensor
+        std: Standard deviation of Gaussian noise
+
+    Returns:
+        Jittered latent tensor
+    """
+    if std > 0:
+        return latent + torch.randn_like(latent) * std
+    return latent
+
+
 class Trainer:
     """Phase 1 Trainer"""
 
@@ -157,24 +174,29 @@ class Trainer:
         print(f"Decoder has {decoder_params:.2f}M parameters")
         print(f"Total parameters: {encoder_params + decoder_params:.2f}M")
 
-        # Create loss function - InfoNCE with RGB patch coherence
-        self.criterion = InfoNCELoss(
-            lambda_recon=config['loss'].get('lambda_recon', 5.0),
-            lambda_infonce=config['loss'].get('lambda_infonce', 2.0),
-            lambda_magnitude=config['loss'].get('lambda_magnitude', 5.0),
-            lambda_spatial_diversity=config['loss'].get('lambda_spatial_diversity', 0.0),
-            lambda_batch_infonce=config['loss'].get('lambda_batch_infonce', 0.0),
-            patch_size=config['loss'].get('infonce_patch_size', 3),
-            num_samples=config['loss'].get('infonce_num_samples', 100),
-            temperature=config['loss'].get('infonce_temperature', 1.0),
-            positive_radius=config['loss'].get('infonce_positive_radius', 3.0),
-            negative_radius=config['loss'].get('infonce_negative_radius', 11.0),
-            min_magnitude=config['loss'].get('min_magnitude', 0.3),
-            spatial_diversity_temperature=config['loss'].get('spatial_diversity_temperature', 0.5),
-            batch_infonce_temperature=config['loss'].get('batch_infonce_temperature', 0.5),
-            batch_infonce_cross_image_radius=config['loss'].get('batch_infonce_cross_image_radius', 2.0),
-            batch_infonce_num_cross_images=config['loss'].get('batch_infonce_num_cross_images', 8)
+        # Create loss functions
+        # Reconstruction loss
+        self.recon_loss = nn.CrossEntropyLoss(ignore_index=50256)
+
+        # Magnitude loss (prevents collapse to zero)
+        self.magnitude_loss = MagnitudeLoss(
+            min_magnitude=config['loss'].get('min_magnitude', 0.3)
         ).to(self.device)
+
+        # Mumford-Shah loss (piecewise constant regions with boundaries)
+        self.mumford_shah_loss = MumfordShahLoss(
+            alpha=config['loss'].get('mumford_shah_alpha', 5.0),
+            beta=config['loss'].get('mumford_shah_beta', 0.0),
+            epsilon=1e-6
+        ).to(self.device)
+
+        # Loss weights
+        self.lambda_recon = config['loss'].get('lambda_recon', 5.0)
+        self.lambda_magnitude = config['loss'].get('lambda_magnitude', 5.0)
+        self.lambda_mumford_shah = config['loss'].get('lambda_mumford_shah', 5.0)
+
+        # Jittering configuration
+        self.jitter_std = config['training'].get('jitter_std', 0.03)
 
         # Create optimizer (both encoder and decoder)
         all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
@@ -256,19 +278,42 @@ class Trainer:
         if self.step < self.blur_warmup_steps:
             latents = self.blur(latents)
 
+        # Add jittering before decoder (prevents exploiting high-frequency speckles)
+        latents_jittered = add_jitter(latents, self.jitter_std)
+
         # Decoder forward pass (teacher forcing)
         # For teacher forcing, input is shifted by 1: [BOS, tok1, tok2, ...] predicts [tok1, tok2, ..., EOS]
         # For simplicity, we'll use the same input_ids (model learns to copy)
-        logits = self.decoder(latents, input_ids, attention_mask)  # [B, L, V]
+        # Use jittered latents for reconstruction
+        logits = self.decoder(latents_jittered, input_ids, attention_mask)  # [B, L, V]
 
-        # Compute loss (image priors + reconstruction)
-        loss_dict = self.criterion(
-            latents,
-            logits=logits,
-            target_ids=input_ids,
-            return_components=True
+        # Compute individual losses
+        # Reconstruction uses jittered latents (via logits)
+        recon = self.recon_loss(
+            logits.reshape(-1, logits.shape[-1]),
+            input_ids.reshape(-1)
         )
-        loss = loss_dict['loss']
+
+        # Regularization losses use original (non-jittered) latents
+        magnitude = self.magnitude_loss(latents)
+        mumford_shah = self.mumford_shah_loss(latents)
+
+        # Combine losses
+        loss = (
+            self.lambda_recon * recon +
+            self.lambda_magnitude * magnitude +
+            self.lambda_mumford_shah * mumford_shah
+        )
+
+        # Create loss dict for metrics
+        loss_dict = {
+            'loss': loss,
+            'components': {
+                'recon_loss': recon.item(),
+                'magnitude_loss': magnitude.item(),
+                'mumford_shah_loss': mumford_shah.item()
+            }
+        }
 
         # Backward pass
         self.optimizer.zero_grad()
@@ -460,15 +505,36 @@ class Trainer:
 
         # Forward pass
         latents = self.encoder(eval_batch['input_ids'], eval_batch['attention_mask'])
-        logits = self.decoder(latents, eval_batch['input_ids'], eval_batch['attention_mask'])
 
-        # Compute metrics
-        loss_dict = self.criterion(
-            latents,
-            logits=logits,
-            target_ids=eval_batch['input_ids'],
-            return_components=True
+        # Add jittering before decoder (same as training)
+        latents_jittered = add_jitter(latents, self.jitter_std)
+        logits = self.decoder(latents_jittered, eval_batch['input_ids'], eval_batch['attention_mask'])
+
+        # Compute individual losses
+        recon = self.recon_loss(
+            logits.reshape(-1, logits.shape[-1]),
+            eval_batch['input_ids'].reshape(-1)
         )
+        magnitude = self.magnitude_loss(latents)
+        mumford_shah = self.mumford_shah_loss(latents)
+
+        # Combine losses
+        loss = (
+            self.lambda_recon * recon +
+            self.lambda_magnitude * magnitude +
+            self.lambda_mumford_shah * mumford_shah
+        )
+
+        # Create loss dict for metrics
+        loss_dict = {
+            'loss': loss,
+            'components': {
+                'recon_loss': recon.item(),
+                'magnitude_loss': magnitude.item(),
+                'mumford_shah_loss': mumford_shah.item()
+            },
+            'metrics': {}  # Placeholder for any additional metrics
+        }
 
         # Decode predictions (argmax)
         predicted_ids = logits.argmax(dim=-1)  # [B, L]
@@ -508,15 +574,10 @@ class Trainer:
             postfix_dict = {
                 'loss': f"{metrics['loss']:.4f}",
                 'recon': f"{metrics.get('recon_loss', 0):.3f}",
-                'info': f"{metrics.get('infonce_loss', 0):.3f}",
                 'mag': f"{metrics.get('magnitude_loss', 0):.3f}",
+                'ms': f"{metrics.get('mumford_shah_loss', 0):.3f}",
+                'lr': f"{metrics['lr']:.2e}"
             }
-            # Add optional loss components if present
-            if 'spatial_diversity_loss' in metrics:
-                postfix_dict['spatial_div'] = f"{metrics['spatial_diversity_loss']:.3f}"
-            if 'batch_infonce_loss' in metrics:
-                postfix_dict['batch_info'] = f"{metrics['batch_infonce_loss']:.3f}"
-            postfix_dict['lr'] = f"{metrics['lr']:.2e}"
             pbar.set_postfix(postfix_dict)
 
             # Evaluate periodically
@@ -625,12 +686,12 @@ def create_default_config():
         },
 
         'loss': {
-            'lambda_spec': 0.5,
-            'lambda_tv': 0.1,
-            'lambda_wav': 0.1,
-            'lambda_kurt': 0.05,
-            'lambda_cov': 0.05,
-            'lambda_var': 0.05
+            'lambda_recon': 5.0,
+            'lambda_magnitude': 5.0,
+            'lambda_mumford_shah': 5.0,
+            'min_magnitude': 0.3,
+            'mumford_shah_alpha': 5.0,
+            'mumford_shah_beta': 0.0
         },
 
         'training': {
@@ -645,7 +706,8 @@ def create_default_config():
             'ema_decay': 0.999,
             'grad_clip': 1.0,
             'blur_sigma': 0.8,
-            'blur_warmup_steps': 2000
+            'blur_warmup_steps': 2000,
+            'jitter_std': 0.1
         },
 
         'data': {
