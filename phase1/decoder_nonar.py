@@ -49,8 +49,15 @@ class NonAutoregressiveTextDecoder(nn.Module):
         # Calculate flattened latent dimension
         latent_dim = latent_size * latent_size * num_visual_channels
 
-        # Project flattened visual latent to sequence of hidden states
-        self.latent_to_seq = nn.Linear(latent_dim, max_seq_len * hidden_size)
+        # Two-layer projection with intermediate bottleneck for memory efficiency
+        # Instead of: latent_dim → max_seq_len * hidden_size (huge!)
+        # Use: latent_dim → intermediate → max_seq_len * hidden_size
+        intermediate_dim = min(2048, latent_dim)  # Bottleneck dimension
+        self.latent_project = nn.Sequential(
+            nn.Linear(latent_dim, intermediate_dim),
+            nn.GELU(),
+            nn.Linear(intermediate_dim, max_seq_len * hidden_size)
+        )
 
         # Positional embeddings (learned)
         self.pos_embedding = nn.Embedding(max_seq_len, hidden_size)
@@ -80,8 +87,11 @@ class NonAutoregressiveTextDecoder(nn.Module):
         """Initialize weights"""
         nn.init.normal_(self.pos_embedding.weight, std=0.02)
         nn.init.normal_(self.output_projection.weight, std=0.02)
-        nn.init.xavier_uniform_(self.latent_to_seq.weight)
-        nn.init.zeros_(self.latent_to_seq.bias)
+        # Initialize projection layers
+        for module in self.latent_project:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
 
     def forward(
         self,
@@ -106,7 +116,8 @@ class NonAutoregressiveTextDecoder(nn.Module):
         visual_flat = visual_latent.reshape(B, H * W * C)
 
         # 2. Project to sequence: [B, H*W*C] → [B, max_seq_len * hidden_size]
-        seq_flat = self.latent_to_seq(visual_flat)
+        # Uses intermediate bottleneck for memory efficiency
+        seq_flat = self.latent_project(visual_flat)
 
         # 3. Reshape to sequence: [B, max_seq_len * hidden_size] → [B, max_seq_len, hidden_size]
         x = seq_flat.reshape(B, self.max_seq_len, self.hidden_size)
