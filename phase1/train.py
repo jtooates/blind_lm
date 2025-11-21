@@ -359,17 +359,26 @@ class Trainer:
                 axes = [axes]
 
             for i in range(num_to_show):
-                # Convert latent [H, W, C] to RGB for display
-                latent_rgb = latents[i].numpy()  # Already on CPU from evaluate()
+                # Convert latent [H, W, C] to display format
+                latent_img = latents[i].numpy()  # Already on CPU from evaluate()
                 # Normalize from [-1.5, 1.5] to [0, 1]
-                latent_rgb = (latent_rgb + 1.5) / 3.0
-                latent_rgb = np.clip(latent_rgb, 0, 1)
+                latent_img = (latent_img + 1.5) / 3.0
+                latent_img = np.clip(latent_img, 0, 1)
 
-                axes[i].imshow(latent_rgb)
+                # Handle single-channel (grayscale) vs multi-channel (RGB)
+                if latent_img.shape[-1] == 1:
+                    # Grayscale: squeeze channel dimension and use gray colormap
+                    axes[i].imshow(latent_img.squeeze(-1), cmap='gray', vmin=0, vmax=1)
+                else:
+                    # RGB: display as-is
+                    axes[i].imshow(latent_img)
                 axes[i].set_title(f'[{i+1}]', fontsize=10)
                 axes[i].axis('off')
 
-            plt.suptitle(f'RGB Latents (Step {self.step})', fontsize=12, fontweight='bold')
+            # Dynamic title based on number of channels
+            num_channels = latents[0].shape[-1]
+            channel_label = 'Grayscale' if num_channels == 1 else f'{num_channels}-channel'
+            plt.suptitle(f'{channel_label} Latents (Step {self.step})', fontsize=12, fontweight='bold')
             plt.tight_layout()
 
             # Save to file instead of displaying
@@ -448,17 +457,26 @@ class Trainer:
             axes = [axes]
 
         for i in range(num_examples):
-            # Convert latent [H, W, C] to RGB for display
-            latent_rgb = latents[i].cpu().numpy()
+            # Convert latent [H, W, C] to display format
+            latent_img = latents[i].cpu().numpy()
             # Normalize from [-1.5, 1.5] to [0, 1]
-            latent_rgb = (latent_rgb + 1.5) / 3.0
-            latent_rgb = np.clip(latent_rgb, 0, 1)
+            latent_img = (latent_img + 1.5) / 3.0
+            latent_img = np.clip(latent_img, 0, 1)
 
-            axes[i].imshow(latent_rgb)
+            # Handle single-channel (grayscale) vs multi-channel (RGB)
+            if latent_img.shape[-1] == 1:
+                # Grayscale: squeeze channel dimension and use gray colormap
+                axes[i].imshow(latent_img.squeeze(-1), cmap='gray', vmin=0, vmax=1)
+            else:
+                # RGB: display as-is
+                axes[i].imshow(latent_img)
             axes[i].set_title(f'[{i+1}]', fontsize=10)
             axes[i].axis('off')
 
-        plt.suptitle(f'RGB Latents - Training Data (Step {self.step})', fontsize=12, fontweight='bold')
+        # Dynamic title based on number of channels
+        num_channels = latents[0].shape[-1]
+        channel_label = 'Grayscale' if num_channels == 1 else f'{num_channels}-channel'
+        plt.suptitle(f'{channel_label} Latents - Training Data (Step {self.step})', fontsize=12, fontweight='bold')
         plt.tight_layout()
 
         # Save to file instead of displaying
