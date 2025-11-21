@@ -175,8 +175,8 @@ class Trainer:
         print(f"Total parameters: {encoder_params + decoder_params:.2f}M")
 
         # Create loss functions
-        # Reconstruction loss
-        self.recon_loss = nn.CrossEntropyLoss(ignore_index=50256)
+        # Reconstruction loss (no ignore_index - learn to predict EOS for padding)
+        self.recon_loss = nn.CrossEntropyLoss()
 
         # Magnitude loss (prevents collapse to zero)
         self.magnitude_loss = MagnitudeLoss(
