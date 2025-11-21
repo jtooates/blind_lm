@@ -167,8 +167,9 @@ class Trainer:
         # Create decoder
         print("Creating decoder...")
         decoder_config = config.get('decoder', config['model']).copy()  # Use encoder config as default
-        # Ensure decoder knows the number of visual channels from encoder
+        # Ensure decoder knows the visual latent shape from encoder
         decoder_config['num_visual_channels'] = config['model'].get('num_channels', 3)
+        decoder_config['latent_size'] = config['model'].get('grid_size', 32)
         self.decoder = create_decoder(decoder_config).to(self.device)
         decoder_params = sum(p.numel() for p in self.decoder.parameters())/1e6
         print(f"Decoder has {decoder_params:.2f}M parameters")
