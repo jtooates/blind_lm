@@ -162,11 +162,12 @@ def compute_gradient_norms(losses, parameters):
             loss,
             parameters,
             retain_graph=True,  # Keep computation graph for other losses
-            create_graph=False   # Don't need second-order gradients
+            create_graph=False,  # Don't need second-order gradients
+            allow_unused=True    # Some losses may not use all parameters
         )
 
-        # Compute L2 norm of gradients
-        grad_norm = torch.sqrt(sum(torch.sum(g ** 2) for g in grads))
+        # Compute L2 norm of gradients (handle None gradients for unused parameters)
+        grad_norm = torch.sqrt(sum(torch.sum(g ** 2) for g in grads if g is not None))
         grad_norms.append(grad_norm)
 
     return grad_norms
