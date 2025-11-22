@@ -617,19 +617,12 @@ class Trainer:
         magnitude = self.magnitude_loss(latents)
         mumford_shah = self.mumford_shah_loss(latents)
 
-        # Gradient normalization: balance losses by equalizing gradient magnitudes
-        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
-        losses = [recon, magnitude, mumford_shah]
-        reference_weights = [self.lambda_recon, self.lambda_magnitude, self.lambda_mumford_shah]
-
-        # Compute gradient norms for each loss
-        grad_norms = compute_gradient_norms(losses, all_params)
-
-        # Compute normalized weights
-        normalized_weights = normalize_gradient_weights(grad_norms, reference_weights)
-
-        # Combine losses with normalized weights
-        loss = sum(w * l for w, l in zip(normalized_weights, losses))
+        # For evaluation, just use static lambda weights (no gradient computation needed)
+        loss = (
+            self.lambda_recon * recon +
+            self.lambda_magnitude * magnitude +
+            self.lambda_mumford_shah * mumford_shah
+        )
 
         # Create loss dict for metrics
         loss_dict = {
@@ -638,16 +631,6 @@ class Trainer:
                 'recon_loss': recon.item(),
                 'magnitude_loss': magnitude.item(),
                 'mumford_shah_loss': mumford_shah.item()
-            },
-            'grad_norms': {
-                'recon_grad_norm': grad_norms[0].item(),
-                'magnitude_grad_norm': grad_norms[1].item(),
-                'mumford_shah_grad_norm': grad_norms[2].item()
-            },
-            'normalized_weights': {
-                'recon_weight': normalized_weights[0],
-                'magnitude_weight': normalized_weights[1],
-                'mumford_shah_weight': normalized_weights[2]
             },
             'metrics': {}  # Placeholder for any additional metrics
         }
