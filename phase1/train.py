@@ -143,6 +143,66 @@ def add_jitter(latent, std):
     return latent
 
 
+def compute_gradient_norms(losses, parameters):
+    """
+    Compute L2 norm of gradients for each loss.
+
+    Args:
+        losses: List of scalar loss tensors
+        parameters: Model parameters to compute gradients with respect to
+
+    Returns:
+        List of gradient norms (one per loss)
+    """
+    grad_norms = []
+
+    for loss in losses:
+        # Compute gradients for this loss
+        grads = torch.autograd.grad(
+            loss,
+            parameters,
+            retain_graph=True,  # Keep computation graph for other losses
+            create_graph=False   # Don't need second-order gradients
+        )
+
+        # Compute L2 norm of gradients
+        grad_norm = torch.sqrt(sum(torch.sum(g ** 2) for g in grads))
+        grad_norms.append(grad_norm)
+
+    return grad_norms
+
+
+def normalize_gradient_weights(grad_norms, reference_weights):
+    """
+    Compute loss weights that normalize gradient magnitudes.
+
+    Uses reference weights (lambdas) to set relative importance,
+    then scales so each loss contributes proportionally to gradients.
+
+    Args:
+        grad_norms: List of gradient L2 norms for each loss
+        reference_weights: List of reference weights (lambdas) for each loss
+
+    Returns:
+        List of normalized weights to apply to each loss
+    """
+    # Convert to tensors for easier manipulation
+    grad_norms = torch.stack(grad_norms)
+    reference_weights = torch.tensor(reference_weights, device=grad_norms.device)
+
+    # Compute target gradient magnitude (weighted average)
+    # This ensures losses with higher reference weights get proportionally larger gradients
+    total_reference_weight = reference_weights.sum()
+    target_grad_norm = (grad_norms * reference_weights).sum() / total_reference_weight
+
+    # Compute weights that would give each loss the target gradient magnitude
+    # weight[i] * grad_norm[i] = target_grad_norm * reference_weight[i] / total_reference_weight
+    # So: weight[i] = target_grad_norm * reference_weight[i] / (grad_norm[i] * total_reference_weight)
+    normalized_weights = (target_grad_norm * reference_weights) / (grad_norms * total_reference_weight + 1e-8)
+
+    return normalized_weights.tolist()
+
+
 class Trainer:
     """Phase 1 Trainer"""
 
@@ -299,12 +359,19 @@ class Trainer:
         magnitude = self.magnitude_loss(latents)
         mumford_shah = self.mumford_shah_loss(latents)
 
-        # Combine losses
-        loss = (
-            self.lambda_recon * recon +
-            self.lambda_magnitude * magnitude +
-            self.lambda_mumford_shah * mumford_shah
-        )
+        # Gradient normalization: balance losses by equalizing gradient magnitudes
+        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        losses = [recon, magnitude, mumford_shah]
+        reference_weights = [self.lambda_recon, self.lambda_magnitude, self.lambda_mumford_shah]
+
+        # Compute gradient norms for each loss
+        grad_norms = compute_gradient_norms(losses, all_params)
+
+        # Compute normalized weights
+        normalized_weights = normalize_gradient_weights(grad_norms, reference_weights)
+
+        # Combine losses with normalized weights
+        loss = sum(w * l for w, l in zip(normalized_weights, losses))
 
         # Create loss dict for metrics
         loss_dict = {
@@ -313,6 +380,16 @@ class Trainer:
                 'recon_loss': recon.item(),
                 'magnitude_loss': magnitude.item(),
                 'mumford_shah_loss': mumford_shah.item()
+            },
+            'grad_norms': {
+                'recon_grad_norm': grad_norms[0].item(),
+                'magnitude_grad_norm': grad_norms[1].item(),
+                'mumford_shah_grad_norm': grad_norms[2].item()
+            },
+            'normalized_weights': {
+                'recon_weight': normalized_weights[0],
+                'magnitude_weight': normalized_weights[1],
+                'mumford_shah_weight': normalized_weights[2]
             }
         }
 
@@ -338,6 +415,8 @@ class Trainer:
         return {
             'loss': loss.item(),
             **loss_dict['components'],
+            **loss_dict['grad_norms'],
+            **loss_dict['normalized_weights'],
             'lr': self.optimizer.param_groups[0]['lr']
         }
 
@@ -537,12 +616,19 @@ class Trainer:
         magnitude = self.magnitude_loss(latents)
         mumford_shah = self.mumford_shah_loss(latents)
 
-        # Combine losses
-        loss = (
-            self.lambda_recon * recon +
-            self.lambda_magnitude * magnitude +
-            self.lambda_mumford_shah * mumford_shah
-        )
+        # Gradient normalization: balance losses by equalizing gradient magnitudes
+        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        losses = [recon, magnitude, mumford_shah]
+        reference_weights = [self.lambda_recon, self.lambda_magnitude, self.lambda_mumford_shah]
+
+        # Compute gradient norms for each loss
+        grad_norms = compute_gradient_norms(losses, all_params)
+
+        # Compute normalized weights
+        normalized_weights = normalize_gradient_weights(grad_norms, reference_weights)
+
+        # Combine losses with normalized weights
+        loss = sum(w * l for w, l in zip(normalized_weights, losses))
 
         # Create loss dict for metrics
         loss_dict = {
@@ -551,6 +637,16 @@ class Trainer:
                 'recon_loss': recon.item(),
                 'magnitude_loss': magnitude.item(),
                 'mumford_shah_loss': mumford_shah.item()
+            },
+            'grad_norms': {
+                'recon_grad_norm': grad_norms[0].item(),
+                'magnitude_grad_norm': grad_norms[1].item(),
+                'mumford_shah_grad_norm': grad_norms[2].item()
+            },
+            'normalized_weights': {
+                'recon_weight': normalized_weights[0],
+                'magnitude_weight': normalized_weights[1],
+                'mumford_shah_weight': normalized_weights[2]
             },
             'metrics': {}  # Placeholder for any additional metrics
         }
@@ -589,13 +685,16 @@ class Trainer:
             metrics = self.train_step(batch)
             epoch_metrics.append(metrics)
 
-            # Update progress bar with all loss components
+            # Update progress bar with all loss components and gradient norms
             postfix_dict = {
                 'loss': f"{metrics['loss']:.4f}",
                 'recon': f"{metrics.get('recon_loss', 0):.3f}",
                 'mag': f"{metrics.get('magnitude_loss', 0):.3f}",
                 'ms': f"{metrics.get('mumford_shah_loss', 0):.3f}",
-                'lr': f"{metrics['lr']:.2e}"
+                'lr': f"{metrics['lr']:.2e}",
+                'gn_r': f"{metrics.get('recon_grad_norm', 0):.2f}",  # Gradient norm: recon
+                'gn_m': f"{metrics.get('magnitude_grad_norm', 0):.2f}",  # Gradient norm: magnitude
+                'gn_s': f"{metrics.get('mumford_shah_grad_norm', 0):.2f}"  # Gradient norm: MS
             }
             pbar.set_postfix(postfix_dict)
 
