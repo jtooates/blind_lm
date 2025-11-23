@@ -360,19 +360,24 @@ class Trainer:
         magnitude = self.magnitude_loss(latents)
         mumford_shah = self.mumford_shah_loss(latents)
 
-        # Gradient normalization: balance losses by equalizing gradient magnitudes
+        # Gradient normalization: balance recon and MS losses only
+        # Magnitude loss uses static lambda weight (it's a constraint, not always active)
         all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
-        losses = [recon, magnitude, mumford_shah]
-        reference_weights = [self.lambda_recon, self.lambda_magnitude, self.lambda_mumford_shah]
+        grad_norm_losses = [recon, mumford_shah]  # Only these get grad-norm
+        grad_norm_weights = [self.lambda_recon, self.lambda_mumford_shah]
 
-        # Compute gradient norms for each loss
-        grad_norms = compute_gradient_norms(losses, all_params)
+        # Compute gradient norms for recon and MS
+        grad_norms = compute_gradient_norms(grad_norm_losses, all_params)
 
-        # Compute normalized weights
-        normalized_weights = normalize_gradient_weights(grad_norms, reference_weights)
+        # Compute normalized weights for recon and MS
+        normalized_weights = normalize_gradient_weights(grad_norms, grad_norm_weights)
 
-        # Combine losses with normalized weights
-        loss = sum(w * l for w, l in zip(normalized_weights, losses))
+        # Combine losses: grad-normed (recon, MS) + static (magnitude)
+        loss = (
+            normalized_weights[0] * recon +
+            normalized_weights[1] * mumford_shah +
+            self.lambda_magnitude * magnitude  # Static weight for magnitude
+        )
 
         # Create loss dict for metrics
         loss_dict = {
@@ -384,13 +389,13 @@ class Trainer:
             },
             'grad_norms': {
                 'recon_grad_norm': grad_norms[0].item(),
-                'magnitude_grad_norm': grad_norms[1].item(),
-                'mumford_shah_grad_norm': grad_norms[2].item()
+                'mumford_shah_grad_norm': grad_norms[1].item(),
+                'magnitude_grad_norm': 0.0  # Not computed (uses static weight)
             },
             'normalized_weights': {
                 'recon_weight': normalized_weights[0],
-                'magnitude_weight': normalized_weights[1],
-                'mumford_shah_weight': normalized_weights[2]
+                'mumford_shah_weight': normalized_weights[1],
+                'magnitude_weight': self.lambda_magnitude  # Static weight
             }
         }
 
