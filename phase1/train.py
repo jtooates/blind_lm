@@ -399,11 +399,11 @@ class Trainer:
         loss.backward()
 
         # Gradient clipping (both encoder and decoder)
-        all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
-        torch.nn.utils.clip_grad_norm_(
-            all_params,
-            self.config['training'].get('grad_clip', 1.0)
-        )
+        # Note: grad_clip=0 disables clipping
+        grad_clip = self.config['training'].get('grad_clip', 1.0)
+        if grad_clip > 0:
+            all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
+            torch.nn.utils.clip_grad_norm_(all_params, grad_clip)
 
         self.optimizer.step()
         self.scheduler.step()
