@@ -363,21 +363,44 @@ class Trainer:
         # Gradient normalization: balance recon and MS losses only
         # Magnitude loss uses static lambda weight (it's a constraint, not always active)
         all_params = list(self.encoder.parameters()) + list(self.decoder.parameters())
-        grad_norm_losses = [recon, mumford_shah]  # Only these get grad-norm
-        grad_norm_weights = [self.lambda_recon, self.lambda_mumford_shah]
 
-        # Compute gradient norms for recon and MS
-        grad_norms = compute_gradient_norms(grad_norm_losses, all_params)
+        # Only include losses with non-zero lambdas in grad-norm
+        grad_norm_losses = []
+        grad_norm_weights = []
+        loss_map = {}  # Track which losses are included
 
-        # Compute normalized weights for recon and MS
-        normalized_weights = normalize_gradient_weights(grad_norms, grad_norm_weights)
+        if self.lambda_recon > 0:
+            grad_norm_losses.append(recon)
+            grad_norm_weights.append(self.lambda_recon)
+            loss_map['recon'] = len(grad_norm_losses) - 1
 
-        # Combine losses: grad-normed (recon, MS) + static (magnitude)
-        loss = (
-            normalized_weights[0] * recon +
-            normalized_weights[1] * mumford_shah +
-            self.lambda_magnitude * magnitude  # Static weight for magnitude
-        )
+        if self.lambda_mumford_shah > 0:
+            grad_norm_losses.append(mumford_shah)
+            grad_norm_weights.append(self.lambda_mumford_shah)
+            loss_map['mumford_shah'] = len(grad_norm_losses) - 1
+
+        # Compute gradient norms and weights only for active losses
+        if len(grad_norm_losses) > 1:
+            # Multiple losses: use grad-norm to balance
+            grad_norms = compute_gradient_norms(grad_norm_losses, all_params)
+            normalized_weights = normalize_gradient_weights(grad_norms, grad_norm_weights)
+        elif len(grad_norm_losses) == 1:
+            # Single loss: just use lambda directly (no balancing needed)
+            grad_norms = [0.0]  # Placeholder
+            normalized_weights = grad_norm_weights
+        else:
+            # No losses in grad-norm (shouldn't happen, but handle gracefully)
+            grad_norms = []
+            normalized_weights = []
+
+        # Combine losses: grad-normed losses + static magnitude
+        loss = self.lambda_magnitude * magnitude  # Start with magnitude
+
+        if 'recon' in loss_map:
+            loss = loss + normalized_weights[loss_map['recon']] * recon
+
+        if 'mumford_shah' in loss_map:
+            loss = loss + normalized_weights[loss_map['mumford_shah']] * mumford_shah
 
         # Create loss dict for metrics
         loss_dict = {
@@ -388,13 +411,13 @@ class Trainer:
                 'mumford_shah_loss': mumford_shah.item()
             },
             'grad_norms': {
-                'recon_grad_norm': grad_norms[0].item(),
-                'mumford_shah_grad_norm': grad_norms[1].item(),
+                'recon_grad_norm': grad_norms[loss_map['recon']].item() if 'recon' in loss_map else 0.0,
+                'mumford_shah_grad_norm': grad_norms[loss_map['mumford_shah']].item() if 'mumford_shah' in loss_map else 0.0,
                 'magnitude_grad_norm': 0.0  # Not computed (uses static weight)
             },
             'normalized_weights': {
-                'recon_weight': normalized_weights[0],
-                'mumford_shah_weight': normalized_weights[1],
+                'recon_weight': normalized_weights[loss_map['recon']] if 'recon' in loss_map else 0.0,
+                'mumford_shah_weight': normalized_weights[loss_map['mumford_shah']] if 'mumford_shah' in loss_map else 0.0,
                 'magnitude_weight': self.lambda_magnitude  # Static weight
             }
         }
