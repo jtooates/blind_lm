@@ -386,7 +386,8 @@ class Trainer:
             normalized_weights = normalize_gradient_weights(grad_norms, grad_norm_weights)
         elif len(grad_norm_losses) == 1:
             # Single loss: just use lambda directly (no balancing needed)
-            grad_norms = [0.0]  # Placeholder
+            # Still compute grad norm for logging purposes
+            grad_norms = compute_gradient_norms(grad_norm_losses, all_params)
             normalized_weights = grad_norm_weights
         else:
             # No losses in grad-norm (shouldn't happen, but handle gracefully)
