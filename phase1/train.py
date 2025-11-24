@@ -237,8 +237,11 @@ class Trainer:
         print(f"Total parameters: {encoder_params + decoder_params:.2f}M")
 
         # Create loss functions
-        # Reconstruction loss (no ignore_index - learn to predict EOS for padding)
-        self.recon_loss = nn.CrossEntropyLoss()
+        # Reconstruction loss with weighted tokens
+        # Use reduction='none' to compute per-token loss, then apply custom weighting
+        self.recon_loss = nn.CrossEntropyLoss(reduction='none')
+        self.padding_weight = config['loss'].get('padding_weight', 0.1)  # Weight for padding tokens
+        self.pad_token_id = 50256  # GPT-2 EOS/padding token
 
         # Magnitude loss (prevents collapse to zero)
         self.magnitude_loss = MagnitudeLoss(
@@ -351,10 +354,20 @@ class Trainer:
 
         # Compute individual losses
         # Reconstruction uses jittered latents (via logits)
-        recon = self.recon_loss(
+        # Apply weighted loss: content tokens get weight 1.0, padding tokens get padding_weight
+        recon_per_token = self.recon_loss(
             logits.reshape(-1, logits.shape[-1]),
             input_ids.reshape(-1)
-        )
+        )  # [B*L]
+
+        # Create weight mask: 1.0 for content, padding_weight for padding
+        is_padding = (input_ids.reshape(-1) == self.pad_token_id)
+        weights = torch.where(is_padding,
+                             torch.tensor(self.padding_weight, device=input_ids.device),
+                             torch.tensor(1.0, device=input_ids.device))
+
+        # Apply weights and compute mean
+        recon = (recon_per_token * weights).sum() / weights.sum()
 
         # Regularization losses use original (non-jittered) latents
         magnitude = self.magnitude_loss(latents)
@@ -639,10 +652,21 @@ class Trainer:
         logits = self.decoder(latents_jittered, eval_batch['input_ids'], eval_batch['attention_mask'])
 
         # Compute individual losses
-        recon = self.recon_loss(
+        # Apply weighted loss: content tokens get weight 1.0, padding tokens get padding_weight
+        recon_per_token = self.recon_loss(
             logits.reshape(-1, logits.shape[-1]),
             eval_batch['input_ids'].reshape(-1)
-        )
+        )  # [B*L]
+
+        # Create weight mask: 1.0 for content, padding_weight for padding
+        is_padding = (eval_batch['input_ids'].reshape(-1) == self.pad_token_id)
+        weights = torch.where(is_padding,
+                             torch.tensor(self.padding_weight, device=eval_batch['input_ids'].device),
+                             torch.tensor(1.0, device=eval_batch['input_ids'].device))
+
+        # Apply weights and compute mean
+        recon = (recon_per_token * weights).sum() / weights.sum()
+
         magnitude = self.magnitude_loss(latents)
         mumford_shah = self.mumford_shah_loss(latents)
 
@@ -822,7 +846,8 @@ def create_default_config():
             'lambda_mumford_shah': 5.0,
             'min_magnitude': 0.3,
             'mumford_shah_alpha': 5.0,
-            'mumford_shah_beta': 0.0
+            'mumford_shah_beta': 0.0,
+            'padding_weight': 0.1  # Weight for padding tokens (vs 1.0 for content)
         },
 
         'training': {
